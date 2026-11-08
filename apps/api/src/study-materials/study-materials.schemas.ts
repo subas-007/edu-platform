@@ -31,10 +31,16 @@ export const updateMaterialVisibilitySchema = z
   .strict();
 export type UpdateMaterialVisibilityInput = z.infer<typeof updateMaterialVisibilitySchema>;
 
+export const exportFlashcardsQuerySchema = z
+  .object({ format: z.enum(['csv', 'pdf']).default('pdf') })
+  .strict();
+export type ExportFlashcardsQuery = z.infer<typeof exportFlashcardsQuerySchema>;
+
 export const listMaterialsQuerySchema = z
   .object({
     status: z.nativeEnum(MaterialStatus).optional(),
     mine: z.enum(['true', 'false']).transform((v) => v === 'true').optional(),
+    search: z.string().trim().max(200).optional(),
     page: z.coerce.number().int().min(1).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(25),
   })

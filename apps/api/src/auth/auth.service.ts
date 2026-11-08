@@ -101,6 +101,14 @@ export class AuthService {
     if (stored) await this.revokeTokenFamily(stored.familyId);
   }
 
+  /** Public profile for GET /auth/me (never includes hashes or token versions). */
+  getProfile(userId: string) {
+    return this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { id: true, email: true, fullName: true, role: true },
+    });
+  }
+
   /** Called when a user is deactivated or their role changes. */
   async revokeAllSessionsForUser(userId: string): Promise<void> {
     await this.prisma.$transaction([

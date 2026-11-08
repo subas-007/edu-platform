@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import {
   ExamMode,
+  ExamPaperStatus,
   ExamQuestion,
   ExamSession,
   ExamSessionStatus,
@@ -16,10 +17,16 @@ import {
 import { randomInt } from 'node:crypto';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
 import { Permission, roleHasPermission } from '../common/security/permissions';
+import {
+  renderCertificatePdf,
+  renderScorecardPdf,
+  toFilenameStem,
+} from '../documents/pdf-documents';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaterialAccessPolicy } from '../study-materials/material-access.policy';
 import {
   ConceptDiagnostic,
+  ListMySessionsQuery,
   QuestionOption,
   StartExamSessionInput,
   SubmitAnswerInput,
@@ -27,8 +34,20 @@ import {
 
 const SECONDS_PER_QUESTION = 90;
 const WEAK_AREA_THRESHOLD = 0.7;
+/** A certificate is issued for an exam-mode result strictly above this percentage. */
+export const CERTIFICATE_MIN_SCORE_EXCLUSIVE = 70;
+
+const CLOSED_STATUSES: ExamSessionStatus[] = [ExamSessionStatus.SUBMITTED, ExamSessionStatus.EXPIRED];
 
 type Tx = Prisma.TransactionClient;
+
+export function isCertificateEligible(session: Pick<ExamSession, 'mode' | 'status' | 'score'>): boolean {
+  return (
+    session.mode === ExamMode.EXAM &&
+    CLOSED_STATUSES.includes(session.status) &&
+    (session.score ?? 0) > CERTIFICATE_MIN_SCORE_EXCLUSIVE
+  );
+}
 
 /** Student-safe projection: correctAnswer / explanation are NEVER included. */
 const toStudentQuestionView = (q: ExamQuestion) => ({
@@ -74,6 +93,101 @@ export class ExamSessionsService {
     return this.getExamSession(user, session.id);
   }
 
+  /**
+   * Starts a timed attempt of a published exam program. Enrollment and attempt limits are
+   * checked under a row lock on the enrollment, so parallel clicks cannot exceed maxAttempts.
+   * An attempt that is still running is resumed instead of creating a second one.
+   */
+  async startPaperSession(user: AuthenticatedUser, paperId: string) {
+    const sessionId = await this.prisma.$transaction(async (tx) => {
+      const [enrollment] = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM exam_enrollments
+         WHERE paper_id = ${paperId}::uuid AND student_id = ${user.id}::uuid FOR UPDATE`;
+      const paper = await tx.examPaper.findUnique({ where: { id: paperId } });
+      if (!paper || (paper.status !== ExamPaperStatus.PUBLISHED && !enrollment)) throw new NotFoundException();
+      if (!enrollment) throw new ConflictException('Enroll in this exam program before starting it');
+      if (paper.status !== ExamPaperStatus.PUBLISHED) {
+        throw new ConflictException('This exam program is not open for attempts');
+      }
+
+      const previous = await tx.examSession.findMany({
+        where: { paperId, studentId: user.id },
+        select: { id: true, status: true, expiresAt: true },
+      });
+      const active = previous.find(
+        (s) => s.status === ExamSessionStatus.IN_PROGRESS && (!s.expiresAt || s.expiresAt.getTime() > Date.now()),
+      );
+      if (active) return active.id;
+      if (previous.length >= paper.maxAttempts) {
+        throw new ConflictException('You have used all attempts for this exam program');
+      }
+
+      const available = await tx.examQuestion.findMany({
+        where: { id: { in: paper.questionIds }, reviewStatus: QuestionReviewStatus.APPROVED },
+        select: { id: true },
+      });
+      if (available.length === 0) {
+        throw new UnprocessableEntityException('This exam program has no available questions');
+      }
+      const startedAt = new Date();
+      const session = await tx.examSession.create({
+        data: {
+          studentId: user.id,
+          paperId,
+          mode: ExamMode.EXAM,
+          questionIds: cryptoShuffle(available.map((q) => q.id)),
+          startedAt,
+          expiresAt: new Date(startedAt.getTime() + paper.durationMinutes * 60_000),
+        },
+      });
+      return session.id;
+    });
+    return this.getExamSession(user, sessionId);
+  }
+
+  /** The student's own attempt history (practice + exam programs), newest first. */
+  async listMySessions(user: AuthenticatedUser, query: ListMySessionsQuery) {
+    const where: Prisma.ExamSessionWhereInput = {
+      studentId: user.id,
+      ...(query.status === 'completed' ? { status: { in: CLOSED_STATUSES } } : {}),
+      ...(query.status === 'in-progress' ? { status: ExamSessionStatus.IN_PROGRESS } : {}),
+    };
+    const [rows, total] = await this.prisma.$transaction([
+      this.prisma.examSession.findMany({
+        where,
+        include: {
+          material: { select: { title: true } },
+          paper: { select: { title: true } },
+        },
+        orderBy: { startedAt: 'desc' },
+        skip: (query.page - 1) * query.pageSize,
+        take: query.pageSize,
+      }),
+      this.prisma.examSession.count({ where }),
+    ]);
+    return {
+      items: rows.map((s) => ({
+        id: s.id,
+        kind: s.paperId ? ('PROGRAM' as const) : ('PRACTICE' as const),
+        title: s.paper?.title ?? s.material?.title ?? 'Deleted material',
+        materialId: s.materialId,
+        paperId: s.paperId,
+        mode: s.mode,
+        // Display-only: an overdue attempt is finalised the next time it is opened.
+        status: this.isExpired(s) ? ExamSessionStatus.EXPIRED : s.status,
+        score: s.score,
+        correctCount: s.correctCount,
+        totalQuestions: s.questionIds.length,
+        startedAt: s.startedAt,
+        completedAt: s.completedAt,
+        certificateEligible: isCertificateEligible(s),
+      })),
+      total,
+      page: query.page,
+      pageSize: query.pageSize,
+    };
+  }
+
   async getExamSession(user: AuthenticatedUser, sessionId: string) {
     let session = await this.getOwnedSessionOrThrow(user, sessionId);
     if (this.isExpired(session)) {
@@ -85,10 +199,17 @@ export class ExamSessionsService {
     const answers = await this.prisma.examAnswer.findMany({ where: { sessionId } });
     const answerByQuestion = new Map(answers.map((a) => [a.questionId, a]));
     const revealFeedback = session.mode === ExamMode.LEARNING || session.status !== ExamSessionStatus.IN_PROGRESS;
+    // Exam-program questions are a reusable bank: after submission students see which
+    // answers were right or wrong, but never the answer key or explanations.
+    const revealAnswerKey = !session.paperId;
+    const context = await this.loadSessionContext(session);
 
     return {
       id: session.id,
+      kind: session.paperId ? 'PROGRAM' : 'PRACTICE',
+      title: context.title,
       materialId: session.materialId,
+      paperId: session.paperId,
       mode: session.mode,
       status: session.status,
       startedAt: session.startedAt,
@@ -101,7 +222,9 @@ export class ExamSessionsService {
           selectedAnswer: answer?.selectedAnswer ?? null,
           feedback:
             answer && revealFeedback
-              ? { isCorrect: answer.isCorrect, correctAnswer: q.correctAnswer, explanation: q.explanation }
+              ? revealAnswerKey
+                ? { isCorrect: answer.isCorrect, correctAnswer: q.correctAnswer, explanation: q.explanation }
+                : { isCorrect: answer.isCorrect }
               : null,
         };
       }),
@@ -178,6 +301,77 @@ export class ExamSessionsService {
     return this.getExamSession(user, sessionId);
   }
 
+  /** Printable score card for a completed attempt (owner or staff). */
+  async renderScorecard(user: AuthenticatedUser, sessionId: string) {
+    const session = await this.getClosedSessionOrThrow(user, sessionId);
+    const [context, student, questions, answers] = await Promise.all([
+      this.loadSessionContext(session),
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: session.studentId },
+        select: { email: true, fullName: true },
+      }),
+      this.loadQuestionsInOrder(session.questionIds),
+      this.prisma.examAnswer.findMany({ where: { sessionId } }),
+    ]);
+    const answerByQuestion = new Map(answers.map((a) => [a.questionId, a]));
+    const diagnostics = (session.diagnostics ?? {}) as {
+      conceptBreakdown?: ConceptDiagnostic[];
+      unansweredCount?: number;
+    };
+    const buffer = await renderScorecardPdf({
+      candidateName: student.fullName || student.email,
+      candidateEmail: student.email,
+      examTitle: context.title,
+      kind: session.paperId ? 'Exam program' : 'Practice',
+      mode: session.mode,
+      status: session.status,
+      startedAt: session.startedAt,
+      completedAt: session.completedAt,
+      scorePercent: session.score ?? 0,
+      correctCount: session.correctCount ?? 0,
+      totalQuestions: session.questionIds.length,
+      unansweredCount: diagnostics.unansweredCount ?? 0,
+      certificateEligible: isCertificateEligible(session),
+      concepts: diagnostics.conceptBreakdown ?? [],
+      questions: questions.map((q, i) => {
+        const a = answerByQuestion.get(q.id);
+        return {
+          index: i + 1,
+          conceptTag: q.conceptTag,
+          outcome: !a ? 'Unanswered' : a.isCorrect ? 'Correct' : 'Incorrect',
+        };
+      }),
+    });
+    return { buffer, filename: `${toFilenameStem(context.title)}-scorecard.pdf` };
+  }
+
+  /** Certificate PDF: only exists for exam-mode results above the threshold. */
+  async renderCertificate(user: AuthenticatedUser, sessionId: string) {
+    const session = await this.getClosedSessionOrThrow(user, sessionId);
+    if (!isCertificateEligible(session)) {
+      throw new NotFoundException(
+        `A certificate requires an exam-mode score above ${CERTIFICATE_MIN_SCORE_EXCLUSIVE}%`,
+      );
+    }
+    const [context, student] = await Promise.all([
+      this.loadSessionContext(session),
+      this.prisma.user.findUniqueOrThrow({
+        where: { id: session.studentId },
+        select: { email: true, fullName: true },
+      }),
+    ]);
+    const buffer = await renderCertificatePdf({
+      certificateId: certificateIdFor(session.id),
+      candidateName: student.fullName || student.email,
+      examTitle: context.title,
+      scorePercent: session.score ?? 0,
+      correctCount: session.correctCount ?? 0,
+      totalQuestions: session.questionIds.length,
+      completedAt: session.completedAt ?? session.startedAt,
+    });
+    return { buffer, filename: `${toFilenameStem(context.title)}-certificate.pdf` };
+  }
+
   // ---------------------------------------------------------------------------
 
   private async finaliseSession(sessionId: string, status: ExamSessionStatus) {
@@ -243,6 +437,32 @@ export class ExamSessionsService {
     });
   }
 
+  private async getClosedSessionOrThrow(user: AuthenticatedUser, sessionId: string) {
+    let session = await this.getOwnedSessionOrThrow(user, sessionId);
+    if (this.isExpired(session)) {
+      await this.finaliseSession(sessionId, ExamSessionStatus.EXPIRED);
+      session = await this.getOwnedSessionOrThrow(user, sessionId);
+    }
+    if (!CLOSED_STATUSES.includes(session.status)) {
+      throw new ConflictException('This attempt has not been submitted yet');
+    }
+    return session;
+  }
+
+  private async loadSessionContext(session: Pick<ExamSession, 'materialId' | 'paperId'>) {
+    if (session.paperId) {
+      const paper = await this.prisma.examPaper.findUnique({
+        where: { id: session.paperId },
+        select: { title: true },
+      });
+      return { title: paper?.title ?? 'Exam program' };
+    }
+    const material = session.materialId
+      ? await this.prisma.material.findUnique({ where: { id: session.materialId }, select: { title: true } })
+      : null;
+    return { title: material?.title ?? 'Deleted material' };
+  }
+
   private buildResultView(session: ExamSession) {
     return {
       score: session.score,
@@ -251,6 +471,7 @@ export class ExamSessionsService {
       totalQuestions: session.questionIds.length,
       completedAt: session.completedAt,
       diagnostics: session.diagnostics,
+      certificateEligible: isCertificateEligible(session),
     };
   }
 
@@ -269,7 +490,7 @@ export class ExamSessionsService {
       SELECT id, student_id AS "studentId", mode, status, question_ids AS "questionIds",
              expires_at AS "expiresAt"
         FROM exam_sessions WHERE id = ${sessionId}::uuid FOR UPDATE`;
-    // Only the owning student may answer — staff read access does not grant write.
+    // Only the owning student may answer; staff read access does not grant write.
     if (!session || session.studentId !== user.id) throw new NotFoundException();
     return session;
   }
@@ -289,7 +510,13 @@ export class ExamSessionsService {
   }
 }
 
-function cryptoShuffle<T>(items: T[]): T[] {
+/** Human-readable certificate id derived from the (unguessable) session id. */
+export function certificateIdFor(sessionId: string): string {
+  const hex = sessionId.replace(/-/g, '').toUpperCase();
+  return `EDU-${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}`;
+}
+
+export function cryptoShuffle<T>(items: T[]): T[] {
   const arr = [...items];
   for (let i = arr.length - 1; i > 0; i--) {
     const j = randomInt(i + 1);

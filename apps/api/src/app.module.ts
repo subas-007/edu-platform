@@ -11,8 +11,10 @@ import { Public } from './common/decorators/access.decorators';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { OriginCheckMiddleware } from './common/guards/origin-check.middleware';
 import { PermissionsGuard } from './common/guards/permissions.guard';
+import { ExamPapersModule } from './exam-papers/exam-papers.module';
 import { ExamQuestionsModule } from './exam-questions/exam-questions.module';
 import { ExamSessionsModule } from './exam-sessions/exam-sessions.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { PrismaModule } from './prisma/prisma.service';
 import { buildRedisConnection } from './queues/queue-names';
 import { StudyMaterialsModule } from './study-materials/study-materials.module';
@@ -44,6 +46,8 @@ class HealthController {
     TutorModule,
     ExamQuestionsModule,
     ExamSessionsModule,
+    ExamPapersModule,
+    NotificationsModule,
     AnalyticsModule,
     StudyRoadmapsModule,
   ],

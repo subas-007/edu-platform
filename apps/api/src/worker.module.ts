@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { LlmModule } from './ai/llm.service';
 import { AssetGenerationProcessor } from './generation/asset-generation.processor';
 import { MaterialIngestionProcessor } from './ingestion/material-ingestion.processor';
+import { MaterialReuseService } from './ingestion/material-reuse.service';
 import { PrismaModule } from './prisma/prisma.service';
 import { ASSET_GENERATION_QUEUE, buildRedisConnection } from './queues/queue-names';
 import { MaterialStorageService } from './study-materials/material-storage.service';
@@ -18,6 +19,11 @@ import { MaterialStorageService } from './study-materials/material-storage.servi
     PrismaModule,
     LlmModule,
   ],
-  providers: [MaterialStorageService, MaterialIngestionProcessor, AssetGenerationProcessor],
+  providers: [
+    MaterialStorageService,
+    MaterialReuseService,
+    MaterialIngestionProcessor,
+    AssetGenerationProcessor,
+  ],
 })
 export class WorkerModule {}

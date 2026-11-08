@@ -60,7 +60,7 @@ export class AuthController {
 
   @AuthenticatedOnly()
   @Get('me')
-  getCurrentUser(@CurrentUser() user: AuthenticatedUser) {
-    return { user };
+  async getCurrentUser(@CurrentUser() user: AuthenticatedUser) {
+    return { user: await this.authService.getProfile(user.id) };
   }
 }

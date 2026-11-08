@@ -1,12 +1,29 @@
 import type { ReactNode } from 'react';
-import { DashboardShell } from '@/components/DashboardShell';
+import { AppShell } from '@/components/shell/AppShell';
+import type { NavSection } from '@/components/shell/nav-icons';
 
-const NAV = [
-  { href: '/admin', label: 'Users' },
-  { href: '/admin/materials', label: 'Asset moderation' },
-  { href: '/admin/audit-logs', label: 'Audit logs' },
+const SECTIONS: NavSection[] = [
+  {
+    heading: 'Administration',
+    items: [
+      { href: '/admin', label: 'Users', icon: 'users' },
+      { href: '/admin/audit-logs', label: 'Audit logs', icon: 'audit' },
+    ],
+  },
+  {
+    heading: 'Assessment',
+    items: [
+      { href: '/admin/question-bank', label: 'Question bank', icon: 'bank' },
+      { href: '/admin/programs', label: 'Exam programs', icon: 'papers' },
+    ],
+  },
+  { heading: 'Content', items: [{ href: '/admin/materials', label: 'Asset moderation', icon: 'moderation' }] },
 ];
 
 export default function AdminLayout({ children }: { children: ReactNode }) {
-  return <DashboardShell title="Administration" navItems={NAV}>{children}</DashboardShell>;
+  return (
+    <AppShell role="ADMIN" workspaceLabel="Administration" sections={SECTIONS}>
+      {children}
+    </AppShell>
+  );
 }

@@ -49,6 +49,23 @@ Runs on CPU (~5 GB RAM); generation for a material takes minutes, hence `LLM_TIM
 hosted provider instead, set `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_CHAT_MODEL`, clear the two prefix variables and,
 if the embedding size changes, add a migration altering `vector(768)` and re-ingest materials.
 
+## Features by role
+
+**Student workspace**: dashboard with stats; materials (upload by drag-and-drop); **flashcards** with deck/list
+views and **PDF / CSV download** (CSV imports into Anki, Quizlet, Excel); **learning mode** (instant feedback with
+explanation and source passage) and **exam mode** (timed, feedback only after submission); **AI tutor** that answers
+only from the **documents the student selects**; **exam programs** to enroll in and sit; **results & certificates**
+with a downloadable score card for every attempt and a **certificate PDF for exam-mode scores above 70%**.
+
+**Examiner / administrator**: **question bank categorised by resource** (approve, reject, fix answers, filter by
+concept); **exam programs**: assemble an ad-hoc question paper from the approved bank for chosen resources and
+concepts (no extra AI calls), review it, then publish; students enroll and sit it with attempt limits; see each
+candidate's results. Re-uploading an already-analysed document **reuses its chunks, embeddings, flashcards,
+questions and roadmap** (matched by a content hash) instead of calling the LLM again.
+
+**Shell**: dark slate-blue theme with aqua accents; collapsible sidebar (drawer on mobile); top bar with search
+(`/` or Ctrl+K), notifications and a profile menu.
+
 ## Layout
 
 | Path | Responsibility |
@@ -57,12 +74,16 @@ if the embedding size changes, add a migration altering `vector(768)` and re-ing
 | `apps/api/src/common/guards/` | `JwtAuthGuard` (authn, DB-backed revocation), `PermissionsGuard` (deny-by-default RBAC), Origin check |
 | `apps/api/src/auth/` | ES256 access tokens, rotating refresh tokens with reuse detection, httpOnly cookies |
 | `apps/api/src/study-materials/` | Upload/URL intake, magic-byte validation, private storage, `MaterialAccessPolicy` (object-level authz) |
-| `apps/api/src/ingestion/` | Worker: extractors, SSRF-safe fetcher, chunker, embeddings |
+| `apps/api/src/ingestion/` | Worker: extractors, SSRF-safe fetcher, chunker, embeddings, `MaterialReuseService` (content-hash dedup) |
 | `apps/api/src/generation/` | Worker: flashcards, questions (Zod-validated), roadmap |
 | `apps/api/src/tutor/` | RAG: authz-scoped vector search → grounded answer with citations |
 | `apps/api/src/exam-sessions/` | Learning/Exam engine, row-locked answering & submission, diagnostics |
-| `apps/api/src/exam-questions/`, `analytics/` | Examiner curation & performance analytics |
+| `apps/api/src/exam-questions/`, `analytics/` | Question bank (by resource) & performance analytics |
+| `apps/api/src/exam-papers/` | Exam programs: ad-hoc papers from the bank, enrollment, attempts |
+| `apps/api/src/documents/` | Server-rendered PDFs: certificates, score cards, flashcard sheets |
+| `apps/api/src/notifications/` | Derived notification feed |
 | `apps/web/src/app/(admin|examiner|student)/` | Isolated role dashboards |
+| `apps/web/src/components/shell/` | App shell: sidebar, search, notifications, profile menu |
 
 ### API surface (`/api/v1`, kebab-case)
 
@@ -72,15 +93,20 @@ if the embedding size changes, add a migration altering `vector(768)` and re-ing
 | `GET /auth/me` | authenticated |
 | `GET/POST /users`, `PATCH /users/:id` | `users:manage` (Admin) |
 | `GET /audit-logs` | `audit-logs:read` (Admin) |
-| `GET /study-materials[/:id[/flashcards]]` | authenticated + object policy |
+| `GET /study-materials[/:id[/flashcards]]` (`?search=`) | authenticated + object policy |
+| `GET /study-materials/:id/flashcards/export?format=pdf|csv` | authenticated + object policy |
 | `POST /study-materials/files`, `POST /study-materials/urls` | `materials:upload` (all roles) |
 | `PATCH /study-materials/:id/visibility` | `materials:publish` (Admin, Examiner) |
 | `DELETE /study-materials/:id` | owner or `materials:moderate` |
-| `GET /exam-questions`, `PATCH /exam-questions/:id` | `questions:curate` (Admin, Examiner) |
+| `GET /exam-questions`, `GET /exam-questions/resources`, `PATCH /exam-questions/:id` | `questions:curate` (Admin, Examiner) |
+| `GET/POST /exam-papers`, `GET/PATCH/DELETE /exam-papers/:id` | `exam-papers:manage` (Admin, Examiner) |
+| `GET /exam-papers/available`, `POST /exam-papers/:id/{enrollments,sessions}` | `exams:take` (Student) |
 | `GET /analytics/{frequently-missed-questions,concept-weaknesses,material-performance}` | `analytics:read` |
 | `POST /tutor/queries` | `tutor:use` (Student) |
 | `POST /exam-sessions`, `POST /exam-sessions/:id/{answers,submissions}` | `exams:take` (Student, owner only) |
-| `GET /exam-sessions/:id` | owner or `exam-results:read-all` |
+| `GET /exam-sessions` (own history) | `exams:take` |
+| `GET /exam-sessions/:id`, `GET …/scorecard`, `GET …/certificate` (PDF) | owner or `exam-results:read-all` |
+| `GET /notifications` | authenticated |
 | `GET /study-roadmaps/:materialId`, `PUT …/progress` | `roadmaps:use` |
 
 ## Security controls
@@ -112,6 +138,8 @@ if the embedding size changes, add a migration altering `vector(768)` and re-ing
 - Per-route rate limits on tutor & uploads (cost/abuse control).
 
 **Exam integrity**
+- Certificates are generated server-side only for exam-mode results above 70%; exam-program answer keys are never shown to candidates (the bank stays reusable). Attempt limits are enforced under a row lock on the enrollment.
+- Content-hash reuse never crosses access boundaries: students only reuse analysis from material they can already read, and receive only approved questions from someone else's material.
 - Question set frozen at session start (crypto shuffle); server-side deadline; `SELECT … FOR UPDATE` serialises answer/submit races; Learning-mode answers locked after feedback (no answer farming).
 
 **Transport & platform**

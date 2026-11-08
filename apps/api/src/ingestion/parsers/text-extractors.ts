@@ -1,20 +1,25 @@
 import { Readability } from '@mozilla/readability';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import * as mammoth from 'mammoth';
+import { PDFParse } from 'pdf-parse';
 import { createWorker } from 'tesseract.js';
 import { fetchPublicWebPage } from './safe-url-fetcher';
-
-// pdf-parse's index.js runs a debug harness when imported directly; use the lib entry.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse: (data: Buffer, options?: { max?: number }) => Promise<{ text: string }> =
-  require('pdf-parse/lib/pdf-parse.js');
 
 const MAX_PDF_PAGES = 500;
 const MAX_EXTRACTED_CHARS = 2_000_000;
 
+/**
+ * pdf-parse v2 (current pdfjs-dist). v1 bundled pdf.js 1.10, which failed
+ * intermittently on valid PDFs ("bad XRef entry", "Illegal character").
+ */
 export async function extractTextFromPdf(file: Buffer): Promise<string> {
-  const { text } = await pdfParse(file, { max: MAX_PDF_PAGES });
-  return text;
+  const parser = new PDFParse({ data: new Uint8Array(file) });
+  try {
+    const { text } = await parser.getText({ first: MAX_PDF_PAGES });
+    return text;
+  } finally {
+    await parser.destroy();
+  }
 }
 
 export async function extractTextFromDocx(file: Buffer): Promise<string> {

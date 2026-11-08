@@ -13,6 +13,7 @@ import {
   MaterialIngestionJob,
 } from '../queues/queue-names';
 import { MaterialStorageService } from '../study-materials/material-storage.service';
+import { computeContentHash, MaterialReuseService } from './material-reuse.service';
 import { UnsafeUrlError } from './parsers/safe-url-fetcher';
 import {
   extractTextFromDocx,
@@ -34,6 +35,7 @@ export class MaterialIngestionProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly storage: MaterialStorageService,
     private readonly llm: LlmService,
+    private readonly reuse: MaterialReuseService,
     @InjectQueue(ASSET_GENERATION_QUEUE)
     private readonly generationQueue: Queue<AssetGenerationJob>,
   ) {
@@ -55,6 +57,11 @@ export class MaterialIngestionProcessor extends WorkerHost {
       if (text.length < MIN_USEFUL_CHARS) {
         throw new UserFacingIngestionError('Not enough readable text was found in this material');
       }
+
+      // Identical content already analysed? Copy its assets instead of re-embedding/re-generating.
+      const contentHash = computeContentHash(text);
+      await this.prisma.material.update({ where: { id: materialId }, data: { contentHash } });
+      if (await this.reuse.tryReuseExistingAnalysis(materialId, contentHash)) return;
 
       const chunks = chunkTextForEmbedding(text);
       const embeddings = await this.llm.embedTexts(chunks.map((c) => c.content));

@@ -74,18 +74,19 @@ export class PerformanceAnalyticsService {
   async summariseMaterialPerformance() {
     const grouped = await this.prisma.examSession.groupBy({
       by: ['materialId'],
-      where: { mode: 'EXAM', status: { in: ['SUBMITTED', 'EXPIRED'] } },
+      // Exam-program sessions have no single material; they are reported per paper elsewhere.
+      where: { mode: 'EXAM', status: { in: ['SUBMITTED', 'EXPIRED'] }, materialId: { not: null } },
       _avg: { score: true },
       _count: { _all: true },
     });
     const materials = await this.prisma.material.findMany({
-      where: { id: { in: grouped.map((g) => g.materialId) } },
+      where: { id: { in: grouped.flatMap((g) => (g.materialId ? [g.materialId] : [])) } },
       select: { id: true, title: true },
     });
     const titleById = new Map(materials.map((m) => [m.id, m.title]));
     return grouped.map((g) => ({
       materialId: g.materialId,
-      materialTitle: titleById.get(g.materialId) ?? 'Unknown',
+      materialTitle: (g.materialId && titleById.get(g.materialId)) ?? 'Unknown',
       averageScore: Math.round((g._avg.score ?? 0) * 10) / 10,
       completedExams: g._count._all,
     }));

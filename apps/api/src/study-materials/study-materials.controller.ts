@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  StreamableFile,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -27,6 +28,8 @@ import { env } from '../config/env';
 import {
   CreateUrlMaterialInput,
   createUrlMaterialSchema,
+  ExportFlashcardsQuery,
+  exportFlashcardsQuerySchema,
   ListMaterialsQuery,
   listMaterialsQuerySchema,
   UpdateMaterialVisibilityInput,
@@ -58,6 +61,22 @@ export class StudyMaterialsController {
   @Get(':materialId/flashcards')
   listFlashcards(@CurrentUser() user: AuthenticatedUser, @Param('materialId', uuidParam) id: string) {
     return this.materialsService.listFlashcards(user, id);
+  }
+
+  @AuthenticatedOnly()
+  @Throttle({ default: { limit: 20, ttl: 60_000 } }) // PDF rendering is CPU work
+  @Get(':materialId/flashcards/export')
+  async exportFlashcards(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('materialId', uuidParam) id: string,
+    @Query(new ZodValidationPipe(exportFlashcardsQuerySchema)) query: ExportFlashcardsQuery,
+  ) {
+    const file = await this.materialsService.exportFlashcards(user, id, query);
+    return new StreamableFile(file.buffer, {
+      type: file.type,
+      disposition: `attachment; filename="${file.filename}"`,
+      length: file.buffer.length,
+    });
   }
 
   @RequirePermissions(Permission.MaterialsUpload)

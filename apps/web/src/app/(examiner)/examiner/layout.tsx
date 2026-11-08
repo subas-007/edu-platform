@@ -1,12 +1,23 @@
 import type { ReactNode } from 'react';
-import { DashboardShell } from '@/components/DashboardShell';
+import { AppShell } from '@/components/shell/AppShell';
+import type { NavSection } from '@/components/shell/nav-icons';
 
-const NAV = [
-  { href: '/examiner', label: 'Performance analytics' },
-  { href: '/examiner/question-bank', label: 'Question bank' },
-  { href: '/examiner/materials', label: 'Content repository' },
+const SECTIONS: NavSection[] = [
+  { items: [{ href: '/examiner', label: 'Performance analytics', icon: 'analytics' }] },
+  {
+    heading: 'Assessment',
+    items: [
+      { href: '/examiner/question-bank', label: 'Question bank', icon: 'bank' },
+      { href: '/examiner/programs', label: 'Exam programs', icon: 'papers' },
+    ],
+  },
+  { heading: 'Content', items: [{ href: '/examiner/materials', label: 'Content repository', icon: 'repository' }] },
 ];
 
 export default function ExaminerLayout({ children }: { children: ReactNode }) {
-  return <DashboardShell title="Examiner" navItems={NAV}>{children}</DashboardShell>;
+  return (
+    <AppShell role="EXAMINER" workspaceLabel="Examiner workspace" sections={SECTIONS}>
+      {children}
+    </AppShell>
+  );
 }

@@ -5,10 +5,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MaterialFileType, MaterialStatus } from '@prisma/client';
+import { MaterialFileType, MaterialStatus, UserRole } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AuditLogService } from '../audit/audit-log.service';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
+import {
+  renderFlashcardsCsv,
+  renderFlashcardsPdf,
+  toFilenameStem,
+} from '../documents/pdf-documents';
 import {
   DEFAULT_JOB_OPTIONS,
   MATERIAL_INGESTION_QUEUE,
@@ -19,6 +24,7 @@ import { MaterialAccessPolicy } from './material-access.policy';
 import { MaterialStorageService } from './material-storage.service';
 import {
   CreateUrlMaterialInput,
+  ExportFlashcardsQuery,
   ListMaterialsQuery,
   UpdateMaterialVisibilityInput,
 } from './study-materials.schemas';
@@ -41,14 +47,20 @@ export class StudyMaterialsService {
         this.accessPolicy.buildReadableMaterialsFilter(user),
         query.status ? { status: query.status } : {},
         query.mine ? { uploadedById: user.id } : {},
+        query.search ? { title: { contains: query.search, mode: 'insensitive' as const } } : {},
       ],
     };
-    return this.materialsRepository.findMaterialsPage(where, query.page, query.pageSize);
+    return this.materialsRepository.findMaterialsPage(
+      where,
+      query.page,
+      query.pageSize,
+      user.role === UserRole.STUDENT,
+    );
   }
 
   async getMaterial(user: AuthenticatedUser, materialId: string) {
     await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
-    return this.materialsRepository.findMaterialSummary(materialId);
+    return this.materialsRepository.findMaterialSummary(materialId, user.role === UserRole.STUDENT);
   }
 
   async uploadMaterialFile(user: AuthenticatedUser, title: string, file: Express.Multer.File | undefined) {
@@ -110,6 +122,17 @@ export class StudyMaterialsService {
   async listFlashcards(user: AuthenticatedUser, materialId: string) {
     await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
     return this.materialsRepository.findFlashcardsForMaterial(materialId);
+  }
+
+  /** Downloadable deck: CSV (Anki/Quizlet/Excel import) or a printable PDF. */
+  async exportFlashcards(user: AuthenticatedUser, materialId: string, query: ExportFlashcardsQuery) {
+    const material = await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
+    const cards = await this.materialsRepository.findFlashcardsForMaterial(materialId);
+    if (cards.length === 0) throw new NotFoundException('No flashcards have been generated yet');
+    const stem = `${toFilenameStem(material.title)}-flashcards`;
+    return query.format === 'csv'
+      ? { buffer: renderFlashcardsCsv(cards), type: 'text/csv; charset=utf-8', filename: `${stem}.csv` }
+      : { buffer: await renderFlashcardsPdf(material.title, cards), type: 'application/pdf', filename: `${stem}.pdf` };
   }
 
   private async createAndEnqueueMaterial(

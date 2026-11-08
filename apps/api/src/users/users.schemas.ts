@@ -1,10 +1,12 @@
 import { UserRole } from '@prisma/client';
 import { z } from 'zod';
 import { passwordPolicy } from '../auth/auth.schemas';
+import { sanitizedText } from '../common/validation';
 
 export const provisionUserSchema = z
   .object({
     email: z.string().trim().toLowerCase().email().max(254),
+    fullName: sanitizedText(120).optional(),
     role: z.nativeEnum(UserRole),
     initialPassword: passwordPolicy,
   })
@@ -15,9 +17,13 @@ export const updateUserSchema = z
   .object({
     role: z.nativeEnum(UserRole).optional(),
     isActive: z.boolean().optional(),
+    fullName: sanitizedText(120).nullable().optional(),
   })
   .strict()
-  .refine((v) => v.role !== undefined || v.isActive !== undefined, 'No changes supplied');
+  .refine(
+    (v) => v.role !== undefined || v.isActive !== undefined || v.fullName !== undefined,
+    'No changes supplied',
+  );
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
 
 export const listUsersQuerySchema = z

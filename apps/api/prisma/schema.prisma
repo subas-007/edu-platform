@@ -31,7 +31,7 @@ enum MaterialStatus {
 }
 
 enum MaterialVisibility {
-  PRIVATE   // visible to uploader (+ staff)
+  PRIVATE // visible to uploader (+ staff)
   PUBLISHED // visible to every student
 }
 
@@ -51,6 +51,12 @@ enum ExamMode {
   EXAM
 }
 
+enum ExamPaperStatus {
+  DRAFT // examiner is assembling / reviewing the paper
+  PUBLISHED // students can enroll and sit it
+  CLOSED // no new attempts; results remain
+}
+
 enum ExamSessionStatus {
   IN_PROGRESS
   SUBMITTED
@@ -60,6 +66,8 @@ enum ExamSessionStatus {
 model User {
   id           String   @id @default(uuid()) @db.Uuid
   email        String   @unique
+  /// Display name for certificates / UI. Optional; falls back to the e-mail.
+  fullName     String?  @map("full_name")
   passwordHash String   @map("password_hash")
   role         UserRole
   isActive     Boolean  @default(true) @map("is_active")
@@ -68,11 +76,13 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  refreshTokens    RefreshToken[]
-  materials        Material[]
-  examSessions     ExamSession[]
-  roadmapProgress  RoadmapProgress[]
-  auditLogs        AuditLog[]
+  refreshTokens   RefreshToken[]
+  materials       Material[]
+  examSessions    ExamSession[]
+  roadmapProgress RoadmapProgress[]
+  auditLogs       AuditLog[]
+  examPapers      ExamPaper[]       @relation("PaperCreator")
+  enrollments     ExamEnrollment[]
 
   @@map("users")
 }
@@ -105,6 +115,10 @@ model Material {
   failureReason   String?            @map("failure_reason")
   /// 0..1 heuristic used by the roadmap generator.
   complexityScore Float?             @map("complexity_score")
+  /// SHA-256 of the normalised extracted text; identical content reuses existing AI assets.
+  contentHash     String?            @map("content_hash")
+  /// Set when chunks/flashcards/questions/roadmap were copied from another material (no LLM calls).
+  reusedFromId    String?            @map("reused_from_id") @db.Uuid
   uploadedById    String             @map("uploaded_by") @db.Uuid
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
@@ -115,18 +129,21 @@ model Material {
   examQuestions ExamQuestion[]
   examSessions  ExamSession[]
   roadmap       StudyRoadmap?
+  reusedFrom    Material?       @relation("MaterialReuse", fields: [reusedFromId], references: [id], onDelete: SetNull)
+  reusedBy      Material[]      @relation("MaterialReuse")
 
   @@index([uploadedById])
+  @@index([contentHash])
   @@index([visibility, status])
   @@map("materials")
 }
 
 model DocumentChunk {
-  id         String                       @id @default(uuid()) @db.Uuid
-  materialId String                       @map("material_id") @db.Uuid
-  chunkIndex Int                          @map("chunk_index")
+  id         String                      @id @default(uuid()) @db.Uuid
+  materialId String                      @map("material_id") @db.Uuid
+  chunkIndex Int                         @map("chunk_index")
   content    String
-  tokenCount Int                          @map("token_count")
+  tokenCount Int                         @map("token_count")
   /// Dimension must equal EMBEDDING_DIMENSIONS. HNSW index lives in prisma/sql/vector-index.sql.
   embedding  Unsupported("vector(768)")?
 
@@ -174,26 +191,69 @@ model ExamQuestion {
 }
 
 model ExamSession {
-  id             String            @id @default(uuid()) @db.Uuid
-  studentId      String            @map("student_id") @db.Uuid
-  materialId     String            @map("material_id") @db.Uuid
-  mode           ExamMode
-  status         ExamSessionStatus @default(IN_PROGRESS)
+  id           String            @id @default(uuid()) @db.Uuid
+  studentId    String            @map("student_id") @db.Uuid
+  /// Practice sessions target one material; exam-program sessions target a paper instead.
+  materialId   String?           @map("material_id") @db.Uuid
+  paperId      String?           @map("paper_id") @db.Uuid
+  mode         ExamMode
+  status       ExamSessionStatus @default(IN_PROGRESS)
   /// Frozen question set so the exam cannot change mid-attempt.
-  questionIds    String[]          @map("question_ids") @db.Uuid
-  score          Float?
-  correctCount   Int?              @map("correct_count")
-  diagnostics    Json?
-  startedAt      DateTime          @default(now()) @map("started_at")
-  expiresAt      DateTime?         @map("expires_at")
-  completedAt    DateTime?         @map("completed_at")
+  questionIds  String[]          @map("question_ids") @db.Uuid
+  score        Float?
+  correctCount Int?              @map("correct_count")
+  diagnostics  Json?
+  startedAt    DateTime          @default(now()) @map("started_at")
+  expiresAt    DateTime?         @map("expires_at")
+  completedAt  DateTime?         @map("completed_at")
 
   student  User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  material Material     @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  material Material?    @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  paper    ExamPaper?   @relation(fields: [paperId], references: [id], onDelete: Restrict)
   answers  ExamAnswer[]
 
   @@index([studentId, status])
+  @@index([paperId])
   @@map("exam_sessions")
+}
+
+/// Ad-hoc question paper assembled by an examiner from the question bank.
+model ExamPaper {
+  id              String          @id @default(uuid()) @db.Uuid
+  title           String
+  description     String          @default("")
+  status          ExamPaperStatus @default(DRAFT)
+  durationMinutes Int             @map("duration_minutes")
+  maxAttempts     Int             @default(1) @map("max_attempts")
+  /// Ordered, frozen selection of APPROVED bank questions.
+  questionIds     String[]        @map("question_ids") @db.Uuid
+  /// Resources the paper was drawn from (for display / filtering).
+  materialIds     String[]        @map("material_ids") @db.Uuid
+  createdById     String          @map("created_by") @db.Uuid
+  publishedAt     DateTime?       @map("published_at")
+  createdAt       DateTime        @default(now()) @map("created_at")
+  updatedAt       DateTime        @updatedAt @map("updated_at")
+
+  createdBy   User             @relation("PaperCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  enrollments ExamEnrollment[]
+  sessions    ExamSession[]
+
+  @@index([status])
+  @@map("exam_papers")
+}
+
+model ExamEnrollment {
+  id         String   @id @default(uuid()) @db.Uuid
+  paperId    String   @map("paper_id") @db.Uuid
+  studentId  String   @map("student_id") @db.Uuid
+  enrolledAt DateTime @default(now()) @map("enrolled_at")
+
+  paper   ExamPaper @relation(fields: [paperId], references: [id], onDelete: Cascade)
+  student User      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([paperId, studentId])
+  @@index([studentId])
+  @@map("exam_enrollments")
 }
 
 model ExamAnswer {
