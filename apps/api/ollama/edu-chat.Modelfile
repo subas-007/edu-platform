@@ -1,0 +1,9 @@
+# Local chat model for the Edu Platform (tutor answers, flashcard/question/roadmap JSON).
+# Build:  npm run llm:setup   (or: ollama create edu-chat -f ollama/edu-chat.Modelfile)
+#
+# Why a custom model instead of plain qwen2.5:7b: Ollama's OpenAI-compatible /v1 endpoint
+# cannot set the context window per request, and the default is too small for 6 retrieved
+# ~500-token chunks + system prompt + chat history. Sampling (temperature) stays per request.
+FROM qwen2.5:7b
+PARAMETER num_ctx 8192
+PARAMETER num_predict 2048

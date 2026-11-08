@@ -1,0 +1,258 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [vector]
+}
+
+enum UserRole {
+  ADMIN
+  EXAMINER
+  STUDENT
+}
+
+enum MaterialFileType {
+  URL
+  PDF
+  JPEG
+  PNG
+  DOCX
+}
+
+enum MaterialStatus {
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum MaterialVisibility {
+  PRIVATE   // visible to uploader (+ staff)
+  PUBLISHED // visible to every student
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  SCENARIO
+}
+
+enum QuestionReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ExamMode {
+  LEARNING
+  EXAM
+}
+
+enum ExamSessionStatus {
+  IN_PROGRESS
+  SUBMITTED
+  EXPIRED
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         UserRole
+  isActive     Boolean  @default(true) @map("is_active")
+  /// Incremented on role change / deactivation to invalidate outstanding access tokens.
+  tokenVersion Int      @default(0) @map("token_version")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  refreshTokens    RefreshToken[]
+  materials        Material[]
+  examSessions     ExamSession[]
+  roadmapProgress  RoadmapProgress[]
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  /// SHA-256 of the opaque token; the raw token is never stored.
+  tokenHash String    @unique @map("token_hash")
+  /// All tokens descending from one login share a family; reuse of a rotated token revokes the family.
+  familyId  String    @map("family_id") @db.Uuid
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model Material {
+  id              String             @id @default(uuid()) @db.Uuid
+  title           String
+  /// Opaque storage key for uploads, or the source URL for URL materials.
+  fileUrl         String             @map("file_url")
+  fileType        MaterialFileType   @map("file_type")
+  status          MaterialStatus     @default(QUEUED)
+  visibility      MaterialVisibility @default(PRIVATE)
+  failureReason   String?            @map("failure_reason")
+  /// 0..1 heuristic used by the roadmap generator.
+  complexityScore Float?             @map("complexity_score")
+  uploadedById    String             @map("uploaded_by") @db.Uuid
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  uploadedBy    User            @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  chunks        DocumentChunk[]
+  flashcards    Flashcard[]
+  examQuestions ExamQuestion[]
+  examSessions  ExamSession[]
+  roadmap       StudyRoadmap?
+
+  @@index([uploadedById])
+  @@index([visibility, status])
+  @@map("materials")
+}
+
+model DocumentChunk {
+  id         String                       @id @default(uuid()) @db.Uuid
+  materialId String                       @map("material_id") @db.Uuid
+  chunkIndex Int                          @map("chunk_index")
+  content    String
+  tokenCount Int                          @map("token_count")
+  /// Dimension must equal EMBEDDING_DIMENSIONS. HNSW index lives in prisma/sql/vector-index.sql.
+  embedding  Unsupported("vector(768)")?
+
+  material Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, chunkIndex])
+  @@map("document_chunks")
+}
+
+model Flashcard {
+  id            String   @id @default(uuid()) @db.Uuid
+  materialId    String   @map("material_id") @db.Uuid
+  frontText     String   @map("front_text")
+  backText      String   @map("back_text")
+  sourceChunkId String?  @map("source_chunk_id") @db.Uuid
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  material Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@index([materialId])
+  @@map("flashcards")
+}
+
+model ExamQuestion {
+  id            String               @id @default(uuid()) @db.Uuid
+  materialId    String               @map("material_id") @db.Uuid
+  questionType  QuestionType         @default(MULTIPLE_CHOICE) @map("question_type")
+  questionText  String               @map("question_text")
+  /// [{ "id": "A", "text": "..." }, ...]
+  options       Json
+  /// Option id. NEVER serialised to students before feedback is due.
+  correctAnswer String               @map("correct_answer")
+  explanation   String
+  conceptTag    String               @map("concept_tag")
+  sourceChunkId String?              @map("source_chunk_id") @db.Uuid
+  reviewStatus  QuestionReviewStatus @default(PENDING) @map("review_status")
+  createdAt     DateTime             @default(now()) @map("created_at")
+  updatedAt     DateTime             @updatedAt @map("updated_at")
+
+  material Material     @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  answers  ExamAnswer[]
+
+  @@index([materialId, reviewStatus])
+  @@map("exam_questions")
+}
+
+model ExamSession {
+  id             String            @id @default(uuid()) @db.Uuid
+  studentId      String            @map("student_id") @db.Uuid
+  materialId     String            @map("material_id") @db.Uuid
+  mode           ExamMode
+  status         ExamSessionStatus @default(IN_PROGRESS)
+  /// Frozen question set so the exam cannot change mid-attempt.
+  questionIds    String[]          @map("question_ids") @db.Uuid
+  score          Float?
+  correctCount   Int?              @map("correct_count")
+  diagnostics    Json?
+  startedAt      DateTime          @default(now()) @map("started_at")
+  expiresAt      DateTime?         @map("expires_at")
+  completedAt    DateTime?         @map("completed_at")
+
+  student  User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  material Material     @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  answers  ExamAnswer[]
+
+  @@index([studentId, status])
+  @@map("exam_sessions")
+}
+
+model ExamAnswer {
+  id             String   @id @default(uuid()) @db.Uuid
+  sessionId      String   @map("session_id") @db.Uuid
+  questionId     String   @map("question_id") @db.Uuid
+  selectedAnswer String   @map("selected_answer")
+  isCorrect      Boolean  @map("is_correct")
+  answeredAt     DateTime @default(now()) @map("answered_at")
+
+  session  ExamSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question ExamQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@index([questionId, isCorrect])
+  @@map("exam_answers")
+}
+
+model StudyRoadmap {
+  id             String   @id @default(uuid()) @db.Uuid
+  materialId     String   @unique @map("material_id") @db.Uuid
+  /// [{ "id": "m1", "title": "...", "summary": "...", "estimatedMinutes": 30, "chunkIndexes": [0,1] }]
+  milestones     Json
+  estimatedHours Float    @map("estimated_hours")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  material Material          @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  progress RoadmapProgress[]
+
+  @@map("study_roadmaps")
+}
+
+model RoadmapProgress {
+  id                  String   @id @default(uuid()) @db.Uuid
+  studentId           String   @map("student_id") @db.Uuid
+  roadmapId           String   @map("roadmap_id") @db.Uuid
+  completedMilestones String[] @map("completed_milestones")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  student User         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  roadmap StudyRoadmap @relation(fields: [roadmapId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, roadmapId])
+  @@map("roadmap_progress")
+}
+
+model AuditLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  actorId      String?  @map("actor_id") @db.Uuid
+  action       String
+  resourceType String   @map("resource_type")
+  resourceId   String?  @map("resource_id")
+  metadata     Json?
+  ipAddress    String?  @map("ip_address")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@map("audit_logs")
+}
