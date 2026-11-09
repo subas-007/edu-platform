@@ -30,6 +30,13 @@ enum MaterialStatus {
   FAILED
 }
 
+enum GenerationStatus {
+  PENDING
+  GENERATING
+  COMPLETED
+  FAILED
+}
+
 enum MaterialVisibility {
   PRIVATE // visible to uploader (+ staff)
   PUBLISHED // visible to every student
@@ -119,6 +126,11 @@ model Material {
   contentHash     String?            @map("content_hash")
   /// Set when chunks/flashcards/questions/roadmap were copied from another material (no LLM calls).
   reusedFromId    String?            @map("reused_from_id") @db.Uuid
+  /// Flashcard/question/roadmap generation, which runs after the material is READY (chunks embedded).
+  generationStatus   GenerationStatus @default(PENDING) @map("generation_status")
+  /// 0..100 while GENERATING.
+  generationProgress Int              @default(0) @map("generation_progress")
+  generationError    String?          @map("generation_error")
   uploadedById    String             @map("uploaded_by") @db.Uuid
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")

@@ -7,27 +7,33 @@ import { useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { apiRequest } from '@/lib/api-client';
 import type { AttemptSummary, Paginated } from '@/lib/types';
-import { useReadyMaterials } from '@/lib/use-materials';
+import { useCanRetryMaterial, useReadyMaterials } from '@/lib/use-materials';
+import { GenerationNotice, MaterialPipelineBadge, pipelineLabel } from '../MaterialPipeline';
 import { EmptyState, formatDate, PageHeader, Spinner } from '../ui';
 import { MaterialPicker } from './MaterialPicker';
 import { StartExamPanel } from './StartExamPanel';
 
+/**
+ * Every document is listed (newest first) — including a fresh upload whose questions are
+ * still being generated — so students can see progress instead of a missing entry.
+ */
 export function PracticeCenter() {
   const params = useSearchParams();
-  const { ready, isLoading } = useReadyMaterials();
-  const withQuestions = ready.filter((m) => m._count.examQuestions > 0);
+  const { all, isLoading } = useReadyMaterials();
+  const canRetry = useCanRetryMaterial();
   const [selected, setSelected] = useState<string | null>(params.get('materialId'));
 
   useEffect(() => {
-    if (!selected && withQuestions[0]) setSelected(withQuestions[0].id);
-  }, [selected, withQuestions]);
+    if (selected || all.length === 0) return;
+    setSelected((all.find((m) => m._count.examQuestions > 0) ?? all[0]).id);
+  }, [selected, all]);
 
   const inProgress = useQuery({
     queryKey: ['exam-sessions', 'in-progress'],
     queryFn: () => apiRequest<Paginated<AttemptSummary>>('/exam-sessions?status=in-progress&pageSize=10'),
   });
   const resumable = (inProgress.data?.items ?? []).filter((s) => s.status === 'IN_PROGRESS');
-  const current = ready.find((m) => m.id === selected);
+  const current = all.find((m) => m.id === selected);
 
   return (
     <>
@@ -58,8 +64,12 @@ export function PracticeCenter() {
 
       {isLoading ? (
         <Spinner />
-      ) : withQuestions.length === 0 ? (
-        <EmptyState icon={ClipboardCheck} title="No practice questions yet">
+      ) : all.length === 0 ? (
+        <EmptyState
+          icon={ClipboardCheck}
+          title="No documents yet"
+          action={<Link href="/student/materials" className="btn-primary">Upload a document</Link>}
+        >
           Questions are generated after you upload a document, or when an examiner publishes course material.
         </EmptyState>
       ) : (
@@ -67,22 +77,35 @@ export function PracticeCenter() {
           <aside className="card h-fit lg:sticky lg:top-24">
             <h2 className="mb-3 text-sm font-semibold text-white">Choose a document</h2>
             <MaterialPicker
-              materials={withQuestions}
+              materials={all}
               selected={selected ? [selected] : []}
               onToggle={setSelected}
-              metric={(m) => `${m._count.examQuestions} Q`}
+              metric={(m) => (m._count.examQuestions > 0 ? `${m._count.examQuestions} Q` : pipelineLabel(m) || '0 Q')}
             />
           </aside>
           {current && (
             <div className="space-y-4">
               <div className="card">
                 <p className="text-xs tracking-wide text-slate-400 uppercase">Selected document</p>
-                <p className="mt-1 text-lg font-semibold text-white">{current.title}</p>
-                <Link href={`/student/materials/${current.id}`} className="mt-1 inline-block text-sm text-aqua-300 hover:underline">
-                  Open study page →
-                </Link>
+                <div className="mt-1 flex flex-wrap items-center gap-2">
+                  <p className="text-lg font-semibold text-white">{current.title}</p>
+                  <MaterialPipelineBadge material={current} />
+                </div>
+                {current.status === 'READY' && (
+                  <Link href={`/student/materials/${current.id}`} className="mt-1 inline-block text-sm text-aqua-300 hover:underline">
+                    Open study page →
+                  </Link>
+                )}
               </div>
-              <StartExamPanel key={current.id} materialId={current.id} availableQuestions={current._count.examQuestions} />
+              <GenerationNotice
+                material={current}
+                what="practice questions"
+                canRetry={canRetry(current)}
+                hasContent={current._count.examQuestions > 0}
+              />
+              {current._count.examQuestions > 0 && (
+                <StartExamPanel key={current.id} materialId={current.id} availableQuestions={current._count.examQuestions} />
+              )}
             </div>
           )}
         </div>

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
+  GenerationStatus,
   MaterialStatus,
   MaterialVisibility,
   Prisma,
@@ -51,7 +52,8 @@ export class MaterialReuseService {
         contentHash,
         id: { not: targetId },
         status: MaterialStatus.READY,
-        roadmap: { isNot: null }, // roadmap is written last → generation finished
+        generationStatus: GenerationStatus.COMPLETED,
+        roadmap: { isNot: null },
         ...(uploaderIsStudent
           ? { OR: [{ visibility: MaterialVisibility.PUBLISHED }, { uploadedById: uploader.id }] }
           : {}),
@@ -147,6 +149,9 @@ export class MaterialReuseService {
             status: MaterialStatus.READY,
             complexityScore: source.complexityScore,
             reusedFromId: source.id,
+            generationStatus: GenerationStatus.COMPLETED,
+            generationProgress: 100,
+            generationError: null,
           },
         });
       },

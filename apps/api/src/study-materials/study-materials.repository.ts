@@ -11,6 +11,9 @@ export const MATERIAL_LIST_SELECT = {
   failureReason: true,
   complexityScore: true,
   reusedFromId: true,
+  generationStatus: true,
+  generationProgress: true,
+  generationError: true,
   createdAt: true,
   uploadedBy: { select: { id: true, email: true, role: true } },
   _count: { select: { flashcards: true, examQuestions: true } },
@@ -73,7 +76,7 @@ export class StudyMaterialsRepository {
     return this.prisma.flashcard.findMany({
       where: { materialId },
       select: { id: true, frontText: true, backText: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], // stable while new batches are appended
     });
   }
 }

@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { MaterialFileType, MaterialStatus, UserRole } from '@prisma/client';
+import { GenerationStatus, MaterialFileType, MaterialStatus, UserRole } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AuditLogService } from '../audit/audit-log.service';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
@@ -15,7 +15,11 @@ import {
   toFilenameStem,
 } from '../documents/pdf-documents';
 import {
-  DEFAULT_JOB_OPTIONS,
+  ASSET_GENERATION_QUEUE,
+  AssetGenerationJob,
+  enqueueUniqueJob,
+  generationJobId,
+  ingestionJobId,
   MATERIAL_INGESTION_QUEUE,
   MaterialIngestionJob,
 } from '../queues/queue-names';
@@ -39,6 +43,8 @@ export class StudyMaterialsService {
     private readonly auditLog: AuditLogService,
     @InjectQueue(MATERIAL_INGESTION_QUEUE)
     private readonly ingestionQueue: Queue<MaterialIngestionJob>,
+    @InjectQueue(ASSET_GENERATION_QUEUE)
+    private readonly generationQueue: Queue<AssetGenerationJob>,
   ) {}
 
   listMaterials(user: AuthenticatedUser, query: ListMaterialsQuery) {
@@ -119,6 +125,53 @@ export class StudyMaterialsService {
     });
   }
 
+  /**
+   * FAILED material → re-run processing from the stored file/URL.
+   * READY material whose generation FAILED → re-run flashcard/question/roadmap generation
+   * (resuming any batches a stalled job already saved).
+   */
+  async retryMaterial(user: AuthenticatedUser, materialId: string) {
+    const material = await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
+    if (!this.accessPolicy.canDeleteMaterial(user, material)) throw new NotFoundException();
+
+    let stage: 'processing' | 'generation';
+    if (material.status === MaterialStatus.FAILED) {
+      stage = 'processing';
+      await this.materialsRepository.updateMaterial(materialId, {
+        status: MaterialStatus.QUEUED,
+        failureReason: null,
+      });
+      await enqueueUniqueJob(this.ingestionQueue, 'ingest-material', { materialId }, ingestionJobId(materialId));
+    } else if (
+      material.status === MaterialStatus.READY &&
+      material.generationStatus === GenerationStatus.FAILED
+    ) {
+      stage = 'generation';
+      const previous = await this.generationQueue.getJob(generationJobId(materialId));
+      await this.materialsRepository.updateMaterial(materialId, {
+        generationStatus: GenerationStatus.PENDING,
+        generationProgress: 0,
+        generationError: null,
+      });
+      await enqueueUniqueJob(
+        this.generationQueue,
+        'generate-assets',
+        { materialId, completedBatches: previous?.data.completedBatches ?? [] },
+        generationJobId(materialId),
+      );
+    } else {
+      throw new ConflictException('Nothing to retry: this material is processing or already complete');
+    }
+
+    await this.auditLog.recordAuditEvent({
+      actorId: user.id,
+      action: `material.retry_${stage}`,
+      resourceType: 'material',
+      resourceId: materialId,
+    });
+    return this.materialsRepository.findMaterialSummary(materialId, user.role === UserRole.STUDENT);
+  }
+
   async listFlashcards(user: AuthenticatedUser, materialId: string) {
     await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
     return this.materialsRepository.findFlashcardsForMaterial(materialId);
@@ -143,10 +196,11 @@ export class StudyMaterialsService {
       ...data,
       uploadedById: user.id,
     });
-    await this.ingestionQueue.add(
+    await enqueueUniqueJob(
+      this.ingestionQueue,
       'ingest-material',
       { materialId: material.id },
-      { ...DEFAULT_JOB_OPTIONS, jobId: `ingest-${material.id}` },
+      ingestionJobId(material.id),
     );
     await this.auditLog.recordAuditEvent({
       actorId: user.id,

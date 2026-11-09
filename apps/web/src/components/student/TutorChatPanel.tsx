@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { Flashcard, TutorAnswer } from '@/lib/types';
-import { useReadyMaterials } from '@/lib/use-materials';
+import { isPipelineBusy, useReadyMaterials } from '@/lib/use-materials';
 import { EmptyState, PageHeader, Spinner } from '../ui';
 import { MaterialPicker } from './MaterialPicker';
 
@@ -18,6 +18,17 @@ interface ChatTurn {
 }
 
 const MAX_SELECTED = 20;
+const SLOW_ANSWER_MS = 15_000;
+
+function tutorErrorMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) return 'Could not reach the server. Check your connection and try again.';
+  if (err.status === 429) return 'You are asking questions very quickly. Please wait a moment and try again.';
+  if (err.status === 503) return err.message; // model busy / not running (message from the API)
+  if (err.status === 500 || err.status === 502 || err.status === 504) {
+    return 'The tutor took too long to answer — the local AI model may be busy generating study material. Please try again in a minute.';
+  }
+  return err.message || 'Sorry, the tutor could not answer that.';
+}
 
 /**
  * The tutor answers ONLY from the documents the student selects: the selection is sent
@@ -79,18 +90,17 @@ export function TutorChatPanel() {
       }),
     onSuccess: (res) =>
       setTurns((t) => [...t, { role: 'assistant', content: res.answer, citations: res.citations, grounded: res.grounded }]),
-    onError: (err) =>
-      setTurns((t) => [
-        ...t,
-        {
-          role: 'assistant',
-          content:
-            err instanceof ApiError && err.status === 429
-              ? 'You are asking questions very quickly. Please wait a moment and try again.'
-              : 'Sorry, the tutor is unavailable right now.',
-        },
-      ]),
+    onError: (err) => setTurns((t) => [...t, { role: 'assistant', content: tutorErrorMessage(err) }]),
   });
+
+  // Local CPU inference can be slow, especially while documents are being generated.
+  const [slow, setSlow] = useState(false);
+  useEffect(() => {
+    if (!ask.isPending) return setSlow(false);
+    const timer = setTimeout(() => setSlow(true), SLOW_ANSWER_MS);
+    return () => clearTimeout(timer);
+  }, [ask.isPending]);
+  const generationRunning = ready.some(isPipelineBusy);
 
   function send(q: string) {
     const text = q.trim();
@@ -232,7 +242,11 @@ export function TutorChatPanel() {
               {ask.isPending && (
                 <div className="flex items-center gap-2 text-sm text-slate-400">
                   <Loader2 className="h-4 w-4 animate-spin text-aqua-400" aria-hidden />
-                  Reading your documents… (the local model can take up to ~30 s)
+                  {slow
+                    ? generationRunning
+                      ? 'Still thinking… the local AI model is also generating study material, so this can take a minute or two.'
+                      : 'Still thinking… the local AI model can take up to a minute.'
+                    : 'Reading your documents…'}
                 </div>
               )}
             </div>

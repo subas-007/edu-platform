@@ -6,13 +6,14 @@ import { apiRequest } from '@/lib/api-client';
 import type { RoadmapView } from '@/lib/types';
 import { EmptyState, ProgressBar, Spinner } from '../ui';
 
-export function StudyRoadmapTracker({ materialId }: { materialId: string }) {
+export function StudyRoadmapTracker({ materialId, generating = true }: { materialId: string; generating?: boolean }) {
   const queryClient = useQueryClient();
   const queryKey = ['study-roadmap', materialId];
   const { data: roadmap, isLoading, isError } = useQuery({
     queryKey,
     queryFn: () => apiRequest<RoadmapView>(`/study-roadmaps/${materialId}`),
-    refetchInterval: (q) => (q.state.status === 'error' ? 10_000 : false),
+    // The roadmap is the last thing generation writes.
+    refetchInterval: (q) => (q.state.status === 'error' && generating ? 10_000 : false),
     retry: false,
   });
 
@@ -39,7 +40,13 @@ export function StudyRoadmapTracker({ materialId }: { materialId: string }) {
   if (isError || !roadmap) {
     return (
       <div className="card">
-        <EmptyState icon={MapIcon} title="Roadmap is being generated">It appears here automatically when ready.</EmptyState>
+        {generating ? (
+          <EmptyState icon={MapIcon} title="Roadmap is being generated">
+            It is created after the flashcards and questions, and appears here automatically.
+          </EmptyState>
+        ) : (
+          <EmptyState icon={MapIcon} title="No roadmap">The study roadmap was not generated for this material.</EmptyState>
+        )}
       </div>
     );
   }

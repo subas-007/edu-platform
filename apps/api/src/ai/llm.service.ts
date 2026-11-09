@@ -6,6 +6,14 @@ import { env } from '../config/env';
 
 const EMBEDDING_BATCH_SIZE = 64;
 
+/** The model server is down, unreachable or too slow — as opposed to a bad model answer. */
+export function isLlmUnavailableError(error: unknown): boolean {
+  return (
+    error instanceof OpenAI.APIConnectionError || // includes APIConnectionTimeoutError
+    (error instanceof OpenAI.APIError && (error.status === 503 || error.status === 502 || error.status === 504))
+  );
+}
+
 /** Serialises an embedding for a parameterised `$1::vector` cast. */
 export function toVectorLiteral(embedding: number[]): string {
   return `[${embedding.map((n) => (Number.isFinite(n) ? n : 0)).join(',')}]`;
@@ -82,13 +90,20 @@ export class LlmService {
     throw new Error('LLM returned invalid structured output');
   }
 
-  async generateChatCompletion(messages: ChatCompletionMessageParam[], maxTokens = 900) {
-    const completion = await this.client.chat.completions.create({
-      model: env.LLM_CHAT_MODEL,
-      temperature: 0.1,
-      max_tokens: maxTokens,
-      messages,
-    });
+  async generateChatCompletion(
+    messages: ChatCompletionMessageParam[],
+    maxTokens = 900,
+    requestOptions?: { timeoutMs?: number; maxRetries?: number },
+  ) {
+    const completion = await this.client.chat.completions.create(
+      {
+        model: env.LLM_CHAT_MODEL,
+        temperature: 0.1,
+        max_tokens: maxTokens,
+        messages,
+      },
+      { timeout: requestOptions?.timeoutMs, maxRetries: requestOptions?.maxRetries },
+    );
     return completion.choices[0]?.message?.content?.trim() ?? '';
   }
 }

@@ -21,6 +21,8 @@ export interface ManagedUser extends SessionUser {
 
 export type MaterialStatus = 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED';
 
+export type GenerationStatus = 'PENDING' | 'GENERATING' | 'COMPLETED' | 'FAILED';
+
 export interface StudyMaterial {
   id: string;
   title: string;
@@ -30,6 +32,10 @@ export interface StudyMaterial {
   failureReason: string | null;
   complexityScore: number | null;
   reusedFromId: string | null;
+  /** Flashcard/question/roadmap generation, which runs after status becomes READY. */
+  generationStatus: GenerationStatus;
+  generationProgress: number;
+  generationError: string | null;
   createdAt: string;
   uploadedBy: { id: string; email: string; role: UserRole };
   _count: { flashcards: number; examQuestions: number };

@@ -5,9 +5,10 @@ import { ArrowRight, Award, Bot, BookOpen, ClipboardCheck, GraduationCap, Layers
 import Link from 'next/link';
 import { apiRequest } from '@/lib/api-client';
 import type { AttemptSummary, Paginated, StudentProgram } from '@/lib/types';
-import { useMaterials } from '@/lib/use-materials';
+import { isPipelineBusy, useMaterials } from '@/lib/use-materials';
 import { displayName, useSessionUser } from '@/lib/use-session';
-import { EmptyState, formatDate, MaterialStatusBadge, PageHeader, ProgressBar, StatCard } from '../ui';
+import { MaterialPipelineBadge } from '../MaterialPipeline';
+import { EmptyState, formatDate, PageHeader, ProgressBar, StatCard } from '../ui';
 
 export function StudentDashboardView() {
   const { data: user } = useSessionUser();
@@ -23,7 +24,7 @@ export function StudentDashboardView() {
 
   const items = materials.data?.items ?? [];
   const ready = items.filter((m) => m.status === 'READY');
-  const processing = items.filter((m) => m.status === 'QUEUED' || m.status === 'PROCESSING');
+  const processing = items.filter(isPipelineBusy);
   const flashcardCount = ready.reduce((s, m) => s + m._count.flashcards, 0);
   const completed = (attempts.data?.items ?? []).filter((a) => a.status !== 'IN_PROGRESS');
   const examScores = completed.filter((a) => a.mode === 'EXAM').map((a) => a.score ?? 0);
@@ -99,7 +100,7 @@ export function StudentDashboardView() {
                     ) : (
                       <span className="line-clamp-2 font-medium text-white">{m.title}</span>
                     )}
-                    <MaterialStatusBadge status={m.status} />
+                    <MaterialPipelineBadge material={m} />
                   </div>
                   <p className="text-xs text-slate-500">
                     {m._count.flashcards} flashcards · {m._count.examQuestions} questions

@@ -45,7 +45,20 @@ material text leaves the machine. Install [Ollama](https://ollama.com), then `np
 | Chat (tutor, flashcards, questions, roadmap) | `edu-chat` | `qwen2.5:7b` with an 8k context window — defined in [`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile) |
 | Embeddings | `nomic-embed-text` | 768 dims; uses `search_document:` / `search_query:` prefixes |
 
-Runs on CPU (~5 GB RAM); generation for a material takes minutes, hence `LLM_TIMEOUT_MS=300000`. To switch to a
+Runs on CPU (~5 GB RAM), so expect minutes, not seconds:
+
+- **Generation** (flashcards, questions, roadmap) runs after a document is processed and samples
+  `GENERATION_MAX_BATCHES` sections (2 model calls each, ~1 min per call on CPU; default 5 here, use 10 with a GPU).
+  Each section is saved as soon as it is written, so cards and questions appear progressively, with a live
+  percentage in the UI. A worker restart mid-run resumes from the last saved section. The worker also re-queues
+  interrupted work by itself (on start-up and every 2 min). Real failures show **Retry** on the material
+  (`POST /study-materials/:id/retries`).
+- **Tutor** answers take ~10 s when the model is idle and a minute or two while it is also generating. The API
+  allows `TUTOR_TIMEOUT_MS=240000`, and the web proxy allows 300 s (`experimental.proxyTimeout` in
+  `next.config.ts`). A model that is down or busy returns a readable 503.
+- `LLM_TIMEOUT_MS=300000` bounds each generation call.
+
+To switch to a
 hosted provider instead, set `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_CHAT_MODEL`, clear the two prefix variables and,
 if the embedding size changes, add a migration altering `vector(768)` and re-ingest materials.
 
@@ -75,7 +88,7 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 | `apps/api/src/auth/` | ES256 access tokens, rotating refresh tokens with reuse detection, httpOnly cookies |
 | `apps/api/src/study-materials/` | Upload/URL intake, magic-byte validation, private storage, `MaterialAccessPolicy` (object-level authz) |
 | `apps/api/src/ingestion/` | Worker: extractors, SSRF-safe fetcher, chunker, embeddings, `MaterialReuseService` (content-hash dedup) |
-| `apps/api/src/generation/` | Worker: flashcards, questions (Zod-validated), roadmap |
+| `apps/api/src/generation/` | Worker: resumable, progress-reporting flashcard/question (Zod-validated)/roadmap generation; `PipelineRecoveryService` re-queues interrupted work |
 | `apps/api/src/tutor/` | RAG: authz-scoped vector search → grounded answer with citations |
 | `apps/api/src/exam-sessions/` | Learning/Exam engine, row-locked answering & submission, diagnostics |
 | `apps/api/src/exam-questions/`, `analytics/` | Question bank (by resource) & performance analytics |
@@ -97,6 +110,7 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 | `GET /study-materials/:id/flashcards/export?format=pdf|csv` | authenticated + object policy |
 | `POST /study-materials/files`, `POST /study-materials/urls` | `materials:upload` (all roles) |
 | `PATCH /study-materials/:id/visibility` | `materials:publish` (Admin, Examiner) |
+| `POST /study-materials/:id/retries` (re-run failed processing or generation) | owner or `materials:moderate` |
 | `DELETE /study-materials/:id` | owner or `materials:moderate` |
 | `GET /exam-questions`, `GET /exam-questions/resources`, `PATCH /exam-questions/:id` | `questions:curate` (Admin, Examiner) |
 | `GET/POST /exam-papers`, `GET/PATCH/DELETE /exam-papers/:id` | `exam-papers:manage` (Admin, Examiner) |

@@ -116,6 +116,15 @@ export class StudyMaterialsController {
     return this.materialsService.updateMaterialVisibility(user, id, body);
   }
 
+  /** Re-runs whichever pipeline stage failed (processing, or flashcard/question generation). */
+  @AuthenticatedOnly() // owner-or-moderator check in service
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':materialId/retries')
+  @HttpCode(202)
+  retryMaterial(@CurrentUser() user: AuthenticatedUser, @Param('materialId', uuidParam) id: string) {
+    return this.materialsService.retryMaterial(user, id);
+  }
+
   @AuthenticatedOnly() // owner-or-moderator check in service
   @Delete(':materialId')
   @HttpCode(204)

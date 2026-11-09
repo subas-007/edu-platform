@@ -19,6 +19,14 @@ const contentSecurityPolicy = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  experimental: {
+    /**
+     * The /api/v1 rewrite proxy aborts after 30 s by default. A local CPU model can need
+     * minutes for a tutor answer (more while it is also generating study material), so allow
+     * slightly more than the API's own TUTOR_TIMEOUT_MS (240 s) and let the API decide.
+     */
+    proxyTimeout: 300_000,
+  },
   reactStrictMode: true,
   /**
    * The browser only ever talks to this origin. /api/v1/* is proxied to the

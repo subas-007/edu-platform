@@ -8,12 +8,20 @@ import type { Flashcard } from '@/lib/types';
 import { DownloadButton } from '../DownloadButton';
 import { EmptyState, ProgressBar, Spinner } from '../ui';
 
-export function FlashcardDeck({ materialId, title }: { materialId: string; title?: string }) {
+export function FlashcardDeck({
+  materialId,
+  title,
+  generating = false,
+}: {
+  materialId: string;
+  title?: string;
+  /** Cards are still being written (batch by batch): keep fetching new ones. */
+  generating?: boolean;
+}) {
   const { data: cards = [], isLoading } = useQuery({
     queryKey: ['flashcards', materialId],
     queryFn: () => apiRequest<Flashcard[]>(`/study-materials/${materialId}/flashcards`),
-    // Generation runs in the background after ingestion; keep checking until cards exist.
-    refetchInterval: (q) => ((q.state.data?.length ?? 0) === 0 ? 8000 : false),
+    refetchInterval: generating ? 10_000 : false,
   });
   const [order, setOrder] = useState<number[]>([]);
   const [index, setIndex] = useState(0);
@@ -21,12 +29,19 @@ export function FlashcardDeck({ materialId, title }: { materialId: string; title
   const [view, setView] = useState<'deck' | 'list'>('deck');
   const [known, setKnown] = useState<Set<string>>(new Set());
 
+  // New cards arriving during generation are appended without losing the student's place.
   useEffect(() => {
-    setOrder(cards.map((_, i) => i));
+    setOrder((prev) =>
+      prev.length === 0 || prev.length > cards.length
+        ? cards.map((_, i) => i)
+        : [...prev, ...cards.slice(prev.length).map((_, i) => prev.length + i)],
+    );
+  }, [cards]);
+  useEffect(() => {
     setIndex(0);
     setRevealed(false);
     setKnown(new Set());
-  }, [cards, materialId]);
+  }, [materialId]);
 
   const ordered = useMemo(() => order.map((i) => cards[i]).filter(Boolean), [order, cards]);
 
@@ -50,8 +65,10 @@ export function FlashcardDeck({ materialId, title }: { materialId: string; title
   if (cards.length === 0) {
     return (
       <div className="card">
-        <EmptyState icon={Layers} title="Flashcards are being generated">
-          The local AI model is writing cards for this material. This page refreshes automatically.
+        <EmptyState icon={Layers} title={generating ? 'Flashcards are being generated' : 'No flashcards'}>
+          {generating
+            ? 'The local AI model is writing cards for this material. They appear here automatically.'
+            : 'No flashcards were generated for this material.'}
         </EmptyState>
       </div>
     );

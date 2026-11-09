@@ -3,6 +3,7 @@ import {
   ExamMode,
   ExamPaperStatus,
   ExamSessionStatus,
+  GenerationStatus,
   MaterialStatus,
   QuestionReviewStatus,
 } from '@prisma/client';
@@ -41,28 +42,41 @@ export class NotificationsService {
     const isStudent = roleHasPermission(user.role, Permission.ExamsTake);
     const base = isStudent ? '/student' : user.role === 'ADMIN' ? '/admin' : '/examiner';
 
+    // One notification per material, for its latest settled pipeline state. Processing-only
+    // READY (text embedded, generation still running) is not "ready" for the student yet.
     const materials = await this.prisma.material.findMany({
       where: {
         uploadedById: user.id,
-        status: { in: [MaterialStatus.READY, MaterialStatus.FAILED] },
         updatedAt: { gte: since },
+        OR: [
+          { status: MaterialStatus.FAILED },
+          {
+            status: MaterialStatus.READY,
+            generationStatus: { in: [GenerationStatus.COMPLETED, GenerationStatus.FAILED] },
+          },
+        ],
       },
-      select: { id: true, title: true, status: true, updatedAt: true, reusedFromId: true },
+      select: { id: true, title: true, status: true, generationStatus: true, updatedAt: true, reusedFromId: true },
       orderBy: { updatedAt: 'desc' },
       take: 10,
     });
     for (const m of materials) {
-      const ready = m.status === MaterialStatus.READY;
+      const ready = m.status === MaterialStatus.READY && m.generationStatus === GenerationStatus.COMPLETED;
+      const generationFailed = m.status === MaterialStatus.READY && !ready;
       items.push({
-        id: `material-${m.id}-${m.status}`,
+        id: `material-${m.id}-${m.status}-${m.generationStatus}`,
         kind: ready ? 'material-ready' : 'material-failed',
-        title: ready ? `"${m.title}" is ready` : `"${m.title}" could not be processed`,
+        title: ready
+          ? `"${m.title}" is ready`
+          : generationFailed
+            ? `Flashcards for "${m.title}" didn't finish`
+            : `"${m.title}" could not be processed`,
         body: ready
           ? m.reusedFromId
             ? 'Matched an existing document; its flashcards and questions were reused instantly.'
-            : 'Flashcards, practice questions and a study roadmap are being prepared.'
-          : 'Open the material list for details and try uploading again.',
-        href: ready && isStudent ? `/student/materials/${m.id}` : `${base}/materials`,
+            : 'Flashcards, practice questions and a study roadmap are ready.'
+          : 'Open the material and use Retry.',
+        href: isStudent ? `/student/materials${ready || generationFailed ? `/${m.id}` : ''}` : `${base}/materials`,
         createdAt: m.updatedAt,
       });
     }
