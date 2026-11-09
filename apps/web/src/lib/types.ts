@@ -10,6 +10,7 @@ export interface Paginated<T> {
 export interface SessionUser {
   id: string;
   email: string;
+  fullName?: string | null;
   role: UserRole;
 }
 
@@ -20,6 +21,8 @@ export interface ManagedUser extends SessionUser {
 
 export type MaterialStatus = 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED';
 
+export type GenerationStatus = 'PENDING' | 'GENERATING' | 'COMPLETED' | 'FAILED';
+
 export interface StudyMaterial {
   id: string;
   title: string;
@@ -28,6 +31,11 @@ export interface StudyMaterial {
   visibility: 'PRIVATE' | 'PUBLISHED';
   failureReason: string | null;
   complexityScore: number | null;
+  reusedFromId: string | null;
+  /** Flashcard/question/roadmap generation, which runs after status becomes READY. */
+  generationStatus: GenerationStatus;
+  generationProgress: number;
+  generationError: string | null;
   createdAt: string;
   uploadedBy: { id: string; email: string; role: UserRole };
   _count: { flashcards: number; examQuestions: number };
@@ -47,8 +55,9 @@ export interface QuestionOption {
 export interface AnswerFeedback {
   selectedAnswer?: string;
   isCorrect: boolean;
-  correctAnswer: string;
-  explanation: string;
+  /** Omitted for exam-program attempts (the answer key is never revealed). */
+  correctAnswer?: string;
+  explanation?: string;
   sourceExcerpt?: { chunkIndex: number; text: string } | null;
 }
 
@@ -61,7 +70,10 @@ export interface ConceptDiagnostic {
 
 export interface ExamSessionView {
   id: string;
-  materialId: string;
+  kind: 'PRACTICE' | 'PROGRAM';
+  title: string;
+  materialId: string | null;
+  paperId: string | null;
   mode: 'LEARNING' | 'EXAM';
   status: 'IN_PROGRESS' | 'SUBMITTED' | 'EXPIRED';
   startedAt: string;
@@ -81,6 +93,7 @@ export interface ExamSessionView {
     correctCount: number;
     totalQuestions: number;
     completedAt: string;
+    certificateEligible: boolean;
     diagnostics: {
       conceptBreakdown: ConceptDiagnostic[];
       weakestConcepts: string[];
@@ -115,4 +128,123 @@ export interface TutorAnswer {
     excerpt: string;
     similarity: number;
   }>;
+}
+
+export interface AttemptSummary {
+  id: string;
+  kind: 'PRACTICE' | 'PROGRAM';
+  title: string;
+  materialId: string | null;
+  paperId: string | null;
+  mode: 'LEARNING' | 'EXAM';
+  status: 'IN_PROGRESS' | 'SUBMITTED' | 'EXPIRED';
+  score: number | null;
+  correctCount: number | null;
+  totalQuestions: number;
+  startedAt: string;
+  completedAt: string | null;
+  certificateEligible: boolean;
+}
+
+export type ExamPaperStatus = 'DRAFT' | 'PUBLISHED' | 'CLOSED';
+
+export interface StudentProgram {
+  id: string;
+  title: string;
+  description: string;
+  status: ExamPaperStatus;
+  durationMinutes: number;
+  maxAttempts: number;
+  questionCount: number;
+  publishedAt: string | null;
+  enrolled: boolean;
+  enrolledAt: string | null;
+  attemptsUsed: number;
+  activeSessionId: string | null;
+  bestScore: number | null;
+  bestSessionId: string | null;
+  certificateSessionId: string | null;
+}
+
+export interface ExamPaperSummary {
+  id: string;
+  title: string;
+  description: string;
+  status: ExamPaperStatus;
+  durationMinutes: number;
+  maxAttempts: number;
+  questionCount: number;
+  resourceCount: number;
+  createdBy: { email: string; fullName: string | null };
+  createdAt: string;
+  publishedAt: string | null;
+  enrollmentCount: number;
+  attemptCount: number;
+  completedAttemptCount: number;
+  averageScore: number | null;
+}
+
+export type ReviewStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface BankQuestion {
+  id: string;
+  questionType: 'MULTIPLE_CHOICE' | 'SCENARIO';
+  questionText: string;
+  options: QuestionOption[];
+  correctAnswer: string;
+  explanation: string;
+  conceptTag: string;
+  reviewStatus: ReviewStatus;
+  material: { id?: string; title: string };
+}
+
+export interface ExamPaperDetail {
+  id: string;
+  title: string;
+  description: string;
+  status: ExamPaperStatus;
+  durationMinutes: number;
+  maxAttempts: number;
+  createdBy: { email: string; fullName: string | null };
+  createdAt: string;
+  publishedAt: string | null;
+  requestedQuestionCount?: number;
+  materials: Array<{ id: string; title: string }>;
+  questions: BankQuestion[];
+  stats: {
+    enrollmentCount: number;
+    attemptCount: number;
+    completedAttemptCount: number;
+    averageScore: number | null;
+    certificatesIssued: number;
+  };
+  candidates: Array<{
+    studentId: string;
+    email: string;
+    fullName: string | null;
+    enrolledAt: string;
+    attempts: number;
+    bestScore: number | null;
+    certified: boolean;
+  }>;
+}
+
+export interface BankResource {
+  id: string;
+  title: string;
+  fileType: StudyMaterial['fileType'];
+  visibility: StudyMaterial['visibility'];
+  createdAt: string;
+  reusedFromId: string | null;
+  counts: { approved: number; pending: number; rejected: number; total: number };
+  concepts: Array<{ conceptTag: string; approved: number }>;
+}
+
+export interface NotificationItem {
+  id: string;
+  kind: 'material-ready' | 'material-failed' | 'new-program' | 'certificate' | 'review-queue';
+  title: string;
+  body: string;
+  href: string;
+  createdAt: string;
 }

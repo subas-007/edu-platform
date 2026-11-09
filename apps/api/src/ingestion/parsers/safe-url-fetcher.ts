@@ -9,6 +9,17 @@ const ALLOWED_CONTENT_TYPES = ['text/html', 'application/xhtml+xml', 'text/plain
 
 export class UnsafeUrlError extends Error {}
 
+/** The site answered but refused or lacks the page (4xx): retrying will not help. */
+export class SourceRejectedError extends Error {
+  constructor(readonly statusCode: number) {
+    super(
+      statusCode === 401 || statusCode === 403
+        ? `The website refused access (HTTP ${statusCode}). Save the page as a PDF and upload the file instead.`
+        : `The website returned HTTP ${statusCode} for this address. Check the link, or upload the page as a PDF.`,
+    );
+  }
+}
+
 /** Only globally routable unicast addresses are allowed (blocks RFC1918, loopback,
  *  link-local/cloud metadata 169.254.169.254, CGNAT, ULA, 6to4/Teredo tunnels, …). */
 export function isPublicIpAddress(address: string): boolean {
@@ -76,7 +87,10 @@ export async function fetchPublicWebPage(rawUrl: string): Promise<{ html: string
     }
     if (response.statusCode !== 200) {
       await response.body.dump();
-      throw new Error(`Source returned HTTP ${response.statusCode}`);
+      if (response.statusCode >= 400 && response.statusCode < 500) {
+        throw new SourceRejectedError(response.statusCode);
+      }
+      throw new Error(`Source returned HTTP ${response.statusCode}`); // 5xx: transient, retried
     }
 
     const contentType = String(response.headers['content-type'] ?? '').split(';')[0].trim();

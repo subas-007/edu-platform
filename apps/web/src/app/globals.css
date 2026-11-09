@@ -1,22 +1,158 @@
 @import "tailwindcss";
 
+/* ---------------------------------------------------------------------------
+   Design tokens: dark slate-blue surfaces with aqua accents.
+   ------------------------------------------------------------------------- */
+@theme {
+  --color-ink-950: #070d1a;
+  --color-ink-900: #0b1426;
+  --color-ink-850: #0e182d;
+  --color-ink-800: #132038;
+  --color-ink-700: #1b2c4c;
+  --color-ink-600: #263b63;
+  --color-ink-500: #3a527f;
+
+  --color-aqua-200: #b4f7f0;
+  --color-aqua-300: #78efe3;
+  --color-aqua-400: #3ee2d2;
+  --color-aqua-500: #19c6b6;
+  --color-aqua-600: #0f9f93;
+  --color-aqua-700: #0b7c73;
+
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 :root {
-  color-scheme: light;
+  color-scheme: dark;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  @apply bg-slate-50 text-slate-900 antialiased;
+  @apply min-h-screen bg-ink-950 text-slate-200 antialiased;
+  background-image:
+    radial-gradient(1200px 600px at 100% -10%, rgb(62 226 210 / 0.07), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, rgb(58 82 127 / 0.25), transparent 60%);
+  background-attachment: fixed;
 }
 
-.card {
-  @apply rounded-xl border border-slate-200 bg-white p-5 shadow-sm;
+::selection {
+  background: rgb(62 226 210 / 0.3);
+  color: #fff;
 }
-.btn-primary {
-  @apply rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50;
+
+/* Slim scrollbars that match the theme */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-ink-600) transparent;
 }
-.btn-secondary {
-  @apply rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50;
+
+:focus-visible {
+  outline: 2px solid var(--color-aqua-400);
+  outline-offset: 2px;
 }
-.input {
-  @apply w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200;
+
+/* ---------------------------------------------------------------------------
+   Component classes
+   ------------------------------------------------------------------------- */
+@layer components {
+  .card {
+    @apply rounded-2xl border border-ink-700/70 bg-ink-900/80 p-5 shadow-xl shadow-black/20 backdrop-blur-sm;
+  }
+  .card-hover {
+    @apply transition hover:border-aqua-500/40 hover:bg-ink-850;
+  }
+  .panel {
+    @apply rounded-xl border border-ink-700/60 bg-ink-850/80;
+  }
+
+  .btn,
+  .btn-primary,
+  .btn-secondary,
+  .btn-ghost,
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-aqua-400 font-semibold text-ink-950 shadow-lg shadow-aqua-500/20 hover:bg-aqua-300;
+  }
+  .btn-secondary {
+    @apply border border-ink-600 bg-ink-800 text-slate-200 hover:border-ink-500 hover:bg-ink-700;
+  }
+  .btn-ghost {
+    @apply text-slate-300 hover:bg-ink-800 hover:text-white;
+  }
+  .btn-danger {
+    @apply border border-red-500/40 bg-red-500/10 text-red-300 hover:bg-red-500/20;
+  }
+  .btn-sm {
+    @apply rounded-lg px-3 py-1.5 text-xs;
+  }
+  .icon-btn {
+    @apply inline-flex h-10 w-10 items-center justify-center rounded-xl text-slate-300 transition hover:bg-ink-800 hover:text-white;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-ink-600 bg-ink-850 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 transition focus:border-aqua-400 focus:ring-2 focus:ring-aqua-400/25 focus:outline-none;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium tracking-wide text-slate-400 uppercase;
+  }
+
+  .badge,
+  .badge-neutral,
+  .badge-aqua,
+  .badge-green,
+  .badge-amber,
+  .badge-red,
+  .badge-violet {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium whitespace-nowrap;
+  }
+  .badge-neutral {
+    @apply border-ink-600 bg-ink-800 text-slate-300;
+  }
+  .badge-aqua {
+    @apply border-aqua-500/40 bg-aqua-500/10 text-aqua-300;
+  }
+  .badge-green {
+    @apply border-emerald-500/40 bg-emerald-500/10 text-emerald-300;
+  }
+  .badge-amber {
+    @apply border-amber-500/40 bg-amber-500/10 text-amber-300;
+  }
+  .badge-red {
+    @apply border-red-500/40 bg-red-500/10 text-red-300;
+  }
+  .badge-violet {
+    @apply border-violet-500/40 bg-violet-500/10 text-violet-300;
+  }
+
+  .table {
+    @apply w-full text-sm;
+  }
+  .table thead {
+    @apply text-left text-[11px] tracking-wider text-slate-400 uppercase;
+  }
+  .table th {
+    @apply px-4 py-3 font-medium;
+  }
+  .table td {
+    @apply border-t border-ink-700/60 px-4 py-3 align-middle;
+  }
+  .table tbody tr {
+    @apply transition hover:bg-ink-800/40;
+  }
+
+  .segmented {
+    @apply inline-flex rounded-xl border border-ink-600 bg-ink-850 p-1;
+  }
+  .segmented > button {
+    @apply rounded-lg px-3 py-1.5 text-xs font-medium text-slate-400 transition hover:text-white;
+  }
+  .segmented > button[aria-pressed="true"] {
+    @apply bg-ink-700 text-aqua-300 shadow;
+  }
 }

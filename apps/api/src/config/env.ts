@@ -33,6 +33,13 @@ const envSchema = z.object({
   EMBEDDING_QUERY_PREFIX: z.string().default(''),
   /** Below this cosine similarity a retrieved chunk is treated as irrelevant. Tune per embedding model. */
   TUTOR_MIN_SIMILARITY: z.coerce.number().min(0).max(1).default(0.3),
+  /** Upper bound for one tutor answer (no retries). Keep below the web proxy timeout (300 s). */
+  TUTOR_TIMEOUT_MS: z.coerce.number().int().min(5_000).max(290_000).default(240_000),
+  /**
+   * Batches of 3 adjacent chunks sampled per material; each batch costs 2 LLM calls.
+   * Lower it on CPU-only machines (each local call can take ~1 min).
+   */
+  GENERATION_MAX_BATCHES: z.coerce.number().int().min(1).max(30).default(10),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

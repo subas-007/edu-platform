@@ -7,6 +7,7 @@ import { ListUsersQuery } from './users.schemas';
 export const PUBLIC_USER_SELECT = {
   id: true,
   email: true,
+  fullName: true,
   role: true,
   isActive: true,
   createdAt: true,
@@ -19,7 +20,12 @@ export class UsersRepository {
   async findUsersPage(query: ListUsersQuery) {
     const where: Prisma.UserWhereInput = {
       role: query.role,
-      email: query.search ? { contains: query.search, mode: 'insensitive' } : undefined,
+      OR: query.search
+        ? [
+            { email: { contains: query.search, mode: 'insensitive' } },
+            { fullName: { contains: query.search, mode: 'insensitive' } },
+          ]
+        : undefined,
     };
     const [items, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({

@@ -1,7 +1,9 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
+import { AlertTriangle, BarChart3, BookOpen, Brain } from 'lucide-react';
 import { apiRequest } from '@/lib/api-client';
+import { EmptyState, PageHeader, ProgressBar, Spinner } from '../ui';
 
 interface MissedQuestion {
   questionId: string;
@@ -32,54 +34,82 @@ export function ExaminerAnalyticsView() {
   });
 
   return (
-    <div className="grid gap-6 lg:grid-cols-2">
-      <section className="card space-y-3">
-        <h2 className="font-semibold">Average exam score by material</h2>
-        {materials.data?.length ? materials.data.map((m) => (
-          <div key={m.materialId} className="flex justify-between text-sm">
-            <span>{m.materialTitle}</span>
-            <span className="text-slate-500">{m.averageScore}% · {m.completedExams} exams</span>
+    <>
+      <PageHeader
+        eyebrow="Insights"
+        title="Student performance"
+        subtitle="Cohort-level results across practice exams, so you can see which materials and concepts need reinforcement."
+      />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="card space-y-4">
+          <div className="flex items-center gap-2">
+            <BookOpen className="h-5 w-5 text-aqua-400" aria-hidden />
+            <h2 className="font-semibold text-white">Average exam score by material</h2>
           </div>
-        )) : <p className="text-sm text-slate-500">No completed exams yet.</p>}
-      </section>
+          {materials.isLoading ? <Spinner /> : materials.data?.length ? materials.data.map((m) => (
+            <div key={m.materialId}>
+              <div className="mb-1 flex justify-between gap-3 text-sm">
+                <span className="truncate text-slate-200">{m.materialTitle}</span>
+                <span className="shrink-0 text-slate-400 tabular-nums">{m.averageScore}% · {m.completedExams} exams</span>
+              </div>
+              <ProgressBar value={m.averageScore} tone="auto" />
+            </div>
+          )) : <p className="text-sm text-slate-400">No completed exams yet.</p>}
+        </section>
 
-      <section className="card space-y-3">
-        <h2 className="font-semibold">Weakest concepts (cohort)</h2>
-        {concepts.data?.map((c) => (
-          <div key={c.conceptTag}>
-            <div className="flex justify-between text-sm">
-              <span>{c.conceptTag}</span>
-              <span className="text-slate-500">{Math.round(c.accuracy * 100)}% · {c.attemptCount} answers</span>
-            </div>
-            <div className="h-2 rounded-full bg-slate-100">
-              <div className="h-2 rounded-full bg-amber-500" style={{ width: `${Math.round(c.accuracy * 100)}%` }} />
-            </div>
+        <section className="card space-y-4">
+          <div className="flex items-center gap-2">
+            <Brain className="h-5 w-5 text-violet-300" aria-hidden />
+            <h2 className="font-semibold text-white">Weakest concepts (cohort)</h2>
           </div>
-        ))}
-      </section>
+          {concepts.isLoading ? <Spinner /> : concepts.data?.length ? concepts.data.map((c) => (
+            <div key={c.conceptTag}>
+              <div className="mb-1 flex justify-between text-sm">
+                <span className="text-slate-200">{c.conceptTag}</span>
+                <span className="text-slate-400 tabular-nums">{Math.round(c.accuracy * 100)}% · {c.attemptCount} answers</span>
+              </div>
+              <ProgressBar value={c.accuracy * 100} tone="auto" />
+            </div>
+          )) : <p className="text-sm text-slate-400">No answers recorded yet.</p>}
+        </section>
 
-      <section className="card space-y-3 lg:col-span-2">
-        <h2 className="font-semibold">Most frequently missed questions</h2>
-        <table className="w-full text-sm">
-          <thead className="text-left text-xs uppercase text-slate-500">
-            <tr><th className="py-2">Question</th><th>Concept</th><th>Error rate</th><th>Common wrong</th><th>Correct</th></tr>
-          </thead>
-          <tbody>
-            {missed.data?.map((q) => (
-              <tr key={q.questionId} className="border-t border-slate-100 align-top">
-                <td className="py-2 pr-4">
-                  <p>{q.questionText}</p>
-                  <p className="text-xs text-slate-400">{q.materialTitle}</p>
-                </td>
-                <td className="text-xs">{q.conceptTag}</td>
-                <td>{Math.round(q.errorRate * 100)}% <span className="text-xs text-slate-400">({q.incorrectCount}/{q.attemptCount})</span></td>
-                <td className="font-semibold text-red-600">{q.mostCommonWrongAnswer ?? '—'}</td>
-                <td className="font-semibold text-emerald-600">{q.correctAnswer}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-    </div>
+        <section className="card overflow-hidden p-0 lg:col-span-2">
+          <div className="flex items-center gap-2 border-b border-ink-700/60 p-4">
+            <AlertTriangle className="h-5 w-5 text-amber-300" aria-hidden />
+            <h2 className="font-semibold text-white">Most frequently missed questions</h2>
+          </div>
+          {missed.isLoading ? (
+            <div className="p-4"><Spinner /></div>
+          ) : !missed.data?.length ? (
+            <div className="p-4"><EmptyState icon={BarChart3} title="Nothing to analyse yet">Data appears once students answer questions.</EmptyState></div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="table min-w-[720px]">
+                <thead>
+                  <tr><th>Question</th><th>Concept</th><th>Error rate</th><th>Common wrong</th><th>Correct</th></tr>
+                </thead>
+                <tbody>
+                  {missed.data.map((q) => (
+                    <tr key={q.questionId} className="align-top">
+                      <td className="max-w-md">
+                        <p className="text-slate-200">{q.questionText}</p>
+                        <p className="text-xs text-slate-500">{q.materialTitle}</p>
+                      </td>
+                      <td><span className="badge-neutral">{q.conceptTag}</span></td>
+                      <td className="whitespace-nowrap">
+                        <span className="font-semibold text-white">{Math.round(q.errorRate * 100)}%</span>{' '}
+                        <span className="text-xs text-slate-500">({q.incorrectCount}/{q.attemptCount})</span>
+                      </td>
+                      <td className="font-semibold text-red-300">{q.mostCommonWrongAnswer ?? '—'}</td>
+                      <td className="font-semibold text-emerald-300">{q.correctAnswer}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      </div>
+    </>
   );
 }

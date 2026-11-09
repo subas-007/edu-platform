@@ -29,6 +29,7 @@ export class UsersService {
     try {
       const user = await this.usersRepository.createUser({
         email: input.email,
+        fullName: input.fullName,
         role: input.role,
         passwordHash,
       });
@@ -50,7 +51,7 @@ export class UsersService {
   }
 
   async updateUser(userId: string, input: UpdateUserInput, actor: AuthenticatedUser, ip?: string) {
-    if (userId === actor.id) {
+    if (userId === actor.id && (input.role !== undefined || input.isActive !== undefined)) {
       // Prevents an admin from locking the system out by demoting/deactivating themselves.
       throw new BadRequestException('Administrators cannot change their own role or status');
     }

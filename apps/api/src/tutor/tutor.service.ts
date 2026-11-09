@@ -1,8 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { MaterialStatus } from '@prisma/client';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { z } from 'zod';
-import { LlmService } from '../ai/llm.service';
+import { isLlmUnavailableError, LlmService } from '../ai/llm.service';
 import { neutraliseTags, OUT_OF_SCOPE_ANSWER, TUTOR_SYSTEM_PROMPT } from '../ai/prompts';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
 import { sanitizedText } from '../common/validation';
@@ -14,6 +14,8 @@ import { TutorRetrievalRepository } from './tutor-retrieval.repository';
 const TOP_K = 6;
 /** Below this cosine similarity a chunk is considered irrelevant (TUTOR_MIN_SIMILARITY). */
 const MIN_SIMILARITY = env.TUTOR_MIN_SIMILARITY;
+export const TUTOR_BUSY_MESSAGE =
+  'The AI model is busy or not running right now (it may be generating study material). Please try again in a minute.';
 
 export const tutorQuerySchema = z
   .object({
@@ -29,6 +31,8 @@ export type TutorQueryInput = z.infer<typeof tutorQuerySchema>;
 
 @Injectable()
 export class TutorService {
+  private readonly logger = new Logger(TutorService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accessPolicy: MaterialAccessPolicy,
@@ -51,7 +55,7 @@ export class TutorService {
     });
     if (readable.length === 0) return { answer: OUT_OF_SCOPE_ANSWER, citations: [], grounded: false };
 
-    const queryEmbedding = await this.llm.embedText(input.question);
+    const queryEmbedding = await this.callModel(() => this.llm.embedText(input.question));
     const chunks = (
       await this.retrieval.findSimilarChunks(queryEmbedding, readable.map((m) => m.id), TOP_K)
     ).filter((c) => Number(c.similarity) >= MIN_SIMILARITY);
@@ -71,7 +75,10 @@ export class TutorService {
       ...input.history.map((turn) => ({ role: turn.role, content: turn.content })),
       { role: 'user', content: `Course sources:\n${context}\n\nStudent question: ${input.question}` },
     ];
-    const answer = await this.llm.generateChatCompletion(messages);
+    // Bounded and not retried: a slow local model must fail fast enough for the HTTP request.
+    const answer = await this.callModel(() =>
+      this.llm.generateChatCompletion(messages, 900, { timeoutMs: env.TUTOR_TIMEOUT_MS, maxRetries: 0 }),
+    );
 
     return {
       answer: answer || OUT_OF_SCOPE_ANSWER,
@@ -85,5 +92,18 @@ export class TutorService {
         similarity: Math.round(Number(c.similarity) * 1000) / 1000,
       })),
     };
+  }
+
+  /** Model outages become a 503 with a readable message instead of a generic 500. */
+  private async callModel<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      if (isLlmUnavailableError(error)) {
+        this.logger.warn(`Tutor model unavailable: ${error}`);
+        throw new ServiceUnavailableException(TUTOR_BUSY_MESSAGE);
+      }
+      throw error;
+    }
   }
 }
