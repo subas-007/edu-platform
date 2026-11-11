@@ -15,9 +15,12 @@
     "db:vector-index": "prisma db execute --file prisma/sql/vector-index.sql --schema prisma/schema.prisma",
     "db:seed": "ts-node scripts/seed-admin.ts",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "llm:setup": "node scripts/setup-local-llm.mjs"
+    "llm:setup": "node scripts/setup-local-llm.mjs",
+    "llm:bench": "node scripts/bench-llm.mjs",
+    "llm:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-llm.ps1"
   },
   "dependencies": {
+    "@huggingface/transformers": "4.3.2",
     "@mozilla/readability": "^0.6.0",
     "@nestjs/bullmq": "^11.0.2",
     "@nestjs/common": "^11.0.11",

@@ -7,3 +7,4 @@ storage/
 keys/
 *.log
 *.tsbuildinfo
+.cache/

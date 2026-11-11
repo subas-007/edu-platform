@@ -11,7 +11,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaterialAccessPolicy } from '../study-materials/material-access.policy';
 import { TutorRetrievalRepository } from './tutor-retrieval.repository';
 
-const TOP_K = 6;
+/** Passages sent to the model per question (TUTOR_TOP_K): each ~500 tokens the model must read first. */
+const TOP_K = env.TUTOR_TOP_K;
 /** Below this cosine similarity a chunk is considered irrelevant (TUTOR_MIN_SIMILARITY). */
 const MIN_SIMILARITY = env.TUTOR_MIN_SIMILARITY;
 export const TUTOR_BUSY_MESSAGE =
@@ -77,7 +78,7 @@ export class TutorService {
     ];
     // Bounded and not retried: a slow local model must fail fast enough for the HTTP request.
     const answer = await this.callModel(() =>
-      this.llm.generateChatCompletion(messages, 900, { timeoutMs: env.TUTOR_TIMEOUT_MS, maxRetries: 0 }),
+      this.llm.generateChatCompletion(messages, env.TUTOR_MAX_TOKENS, { timeoutMs: env.TUTOR_TIMEOUT_MS, maxRetries: 0 }),
     );
 
     return {

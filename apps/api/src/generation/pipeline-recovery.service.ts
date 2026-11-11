@@ -72,27 +72,39 @@ export class PipelineRecoveryService implements OnApplicationBootstrap, OnApplic
       ]);
 
       for (const { id } of unfinishedIngestion) {
-        const action = await this.recover(this.ingestionQueue, ingestionJobId(id), 'ingest-material', { materialId: id });
+        const action = await this.recover(this.ingestionQueue, ingestionJobId(id), 'ingest-material', { materialId: id }, () =>
+          this.prisma.material
+            .count({ where: { id, status: { in: [MaterialStatus.QUEUED, MaterialStatus.PROCESSING] } } })
+            .then((n) => n > 0),
+        );
         if (action === 'failed') {
           await this.prisma.material.updateMany({
             where: { id, status: { in: [MaterialStatus.QUEUED, MaterialStatus.PROCESSING] } },
             data: { status: MaterialStatus.FAILED, failureReason: INGESTION_FAILED_MESSAGE },
           });
         }
-        if (action !== 'alive') this.logger.log(`Material ${id}: ingestion ${action}`);
+        if (action === 'requeued' || action === 'failed') this.logger.log(`Material ${id}: ingestion ${action}`);
       }
 
       for (const { id } of unfinishedGeneration) {
-        const action = await this.recover(this.generationQueue, generationJobId(id), 'generate-assets', {
-          materialId: id,
-        });
+        const action = await this.recover(this.generationQueue, generationJobId(id), 'generate-assets', { materialId: id }, () =>
+          this.prisma.material
+            .count({
+              where: {
+                id,
+                status: MaterialStatus.READY,
+                generationStatus: { in: [GenerationStatus.PENDING, GenerationStatus.GENERATING] },
+              },
+            })
+            .then((n) => n > 0),
+        );
         if (action === 'failed') {
           await this.prisma.material.updateMany({
             where: { id, generationStatus: { in: [GenerationStatus.PENDING, GenerationStatus.GENERATING] } },
             data: { generationStatus: GenerationStatus.FAILED, generationError: GENERATION_FAILED_MESSAGE },
           });
         }
-        if (action !== 'alive') this.logger.log(`Material ${id}: generation ${action}`);
+        if (action === 'requeued' || action === 'failed') this.logger.log(`Material ${id}: generation ${action}`);
       }
     } catch (error) {
       this.logger.warn(`Pipeline recovery sweep failed: ${error}`);
@@ -105,16 +117,21 @@ export class PipelineRecoveryService implements OnApplicationBootstrap, OnApplic
    * alive    – job is queued/running, nothing to do
    * requeued – job was missing, or was killed by a worker restart (stall); progress kept
    * failed   – job failed for a real reason (its own handler normally records this)
+   * settled  – the job finished between the sweep's query and now; nothing to do
    */
   private async recover<T extends { materialId: string }>(
     queue: Queue<T>,
     jobId: string,
     name: string,
     data: T,
-  ): Promise<'alive' | 'requeued' | 'failed'> {
+    stillUnfinished: () => Promise<boolean>,
+  ): Promise<'alive' | 'requeued' | 'failed' | 'settled'> {
     const job = (await queue.getJob(jobId)) as Job<T> | undefined;
     const state = job ? await job.getState() : 'missing';
     if (['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(state)) return 'alive';
+    // The sweep's material query ran before the job state was read: a job that just completed
+    // has already moved the material on. Re-check, or a finished material gets processed twice.
+    if (!(await stillUnfinished())) return 'settled';
     if (state === 'failed' && !/stalled/i.test(job?.failedReason ?? '')) return 'failed';
 
     // missing, completed-but-unfinished, unknown, or stalled: queue again, carrying saved progress.

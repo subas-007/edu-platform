@@ -125,6 +125,9 @@ export class AssetGenerationProcessor extends WorkerHost {
 
     for (const [batchIndex, batch] of batches.entries()) {
       if (completed.has(batchIndex)) continue;
+      // Each model call can take minutes: stop early if the material was deleted meanwhile,
+      // so the (single) generation slot is freed for the next upload.
+      if (!(await this.materialStillExists(material.id))) return this.logAbandoned(material.id);
       const labelled = batch.map((c) => ({ label: `C${c.chunkIndex}`, content: c.content, id: c.id }));
       const resolveChunkId = (label: string) => labelled.find((c) => c.label === label)?.id ?? null;
       const prompt = formatChunksForPrompt(labelled);
@@ -166,6 +169,7 @@ export class AssetGenerationProcessor extends WorkerHost {
       await this.reportProgress(material.id, ++stepsDone, totalSteps);
     }
 
+    if (!(await this.materialStillExists(material.id))) return this.logAbandoned(material.id);
     const roadmap = await this.generateStudyRoadmap(chunks, material.complexityScore ?? 0.5);
     const [cardCount, questionCount] = await Promise.all([
       this.prisma.flashcard.count({ where: { materialId: material.id } }),
@@ -201,6 +205,14 @@ export class AssetGenerationProcessor extends WorkerHost {
       this.logger.warn(`${label} batch failed: ${error}`);
       return null;
     }
+  }
+
+  private async materialStillExists(materialId: string) {
+    return (await this.prisma.material.count({ where: { id: materialId } })) > 0;
+  }
+
+  private logAbandoned(materialId: string) {
+    this.logger.log(`Material ${materialId} was deleted; generation stopped`);
   }
 
   private reportProgress(materialId: string, stepsDone: number, totalSteps: number) {

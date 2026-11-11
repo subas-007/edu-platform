@@ -18,12 +18,12 @@ Browser ──HTTPS──► Next.js (apps/web)  ── /api/v1/* proxied ──
 
 ```bash
 docker compose up -d                       # Postgres+pgvector & Redis on loopback
-                                           # (port clash? POSTGRES_HOST_PORT=55432 docker compose up -d)
+                                           # (port clash? put POSTGRES_HOST_PORT=55432 in ./.env)
 cd apps/api
 cp .env.example .env
 npm install
 npm run keys:generate                      # paste private+public into apps/api/.env, public into apps/web/.env.local
-npm run llm:setup                          # local LLM via Ollama (see below); set SEED_ADMIN_PASSWORD in .env
+# start the local model server (see "Local LLM" below); set SEED_ADMIN_PASSWORD in .env
 npm run db:deploy                          # applies migrations, incl. the HNSW vector index
 npm run db:seed                            # first admin — then delete SEED_ADMIN_PASSWORD from .env
 npm run dev:api                            # :4000
@@ -36,31 +36,61 @@ npm install && npm run dev                 # http://localhost:3005
 
 ### Local LLM (default)
 
-All model calls go through Ollama's OpenAI-compatible endpoint (`http://localhost:11434/v1`), so no
-material text leaves the machine. Install [Ollama](https://ollama.com), then `npm run llm:setup` (from
-`apps/api`) pulls the models and builds the chat model:
+All model calls stay on the machine, so no material text leaves it.
 
-| Role | Model | Notes |
-|---|---|---|
-| Chat (tutor, flashcards, questions, roadmap) | `edu-chat` | `qwen2.5:7b` with an 8k context window — defined in [`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile) |
-| Embeddings | `nomic-embed-text` | 768 dims; uses `search_document:` / `search_query:` prefixes |
+| Role | Served by | Model | Notes |
+|---|---|---|---|
+| Chat (tutor, flashcards, questions, roadmap) | [colibri](http://127.0.0.1:8000) — OpenAI-compatible server at `http://127.0.0.1:8000/v1` | `qwen3.6-colibri` (Qwen3.6-35B-A3B MoE, INT4 experts + INT8 trunk) | Start it with `npm run llm:start` (from `apps/api`) |
+| Embeddings | the API and worker themselves (`EMBEDDING_PROVIDER=local`, transformers.js / ONNX on CPU) | `nomic-ai/nomic-embed-text-v1.5` | 768 dims, `search_document:` / `search_query:` prefixes. ~520 MB is downloaded once into `apps/api/.cache/models` |
 
-Runs on CPU (~5 GB RAM), so expect minutes, not seconds:
+colibri needs two settings that other servers don't:
+
+- **No `/embeddings` endpoint**, so embeddings run in-process. It is the same nomic model Ollama served before, and
+  its vectors match the stored ones exactly (cosine 1.0), so earlier uploads need no re-indexing.
+- **Rejects `response_format`** ("grammars are not supported"), so `LLM_JSON_MODE=prompt` asks for JSON in the
+  prompt. Replies are parsed leniently (code fences, `<think>` blocks and surrounding prose are tolerated) and
+  validated with Zod, with one corrective retry.
+
+`npm run llm:start` ([`apps/api/scripts/start-llm.ps1`](apps/api/scripts/start-llm.ps1)) sets the model up for
+this app: 16k context instead of 64k, a fixed 12 GB RAM budget, thinking off, INT4 experts and an INT8 trunk.
+`npm run llm:bench` times one real flashcard call so changes can be measured. Results on the dev machine
+(i7-13620H, 32 GB RAM, NVMe; 1,359-token prompt):
+
+| colibri configuration | Prompt reading | Writing | One call |
+|---|---|---|---|
+| `coli web --auto-tier` (original, 64k context) | 267 s | 1.5 tokens/s | 10.7 min |
+| `llm:start -DenseBits 4` (INT4 trunk) | 310 s | 4.3 tokens/s | 7.8 min |
+| **`llm:start`** (INT8 trunk, default) | **118 s** | **5.3 tokens/s** | **3.7 min** |
+
+The experts were already INT4 in every run. Also storing the trunk in INT4 is *slower* on this CPU: it has fast
+INT8 dot products (AVX-VNNI), while INT4 must be unpacked first. The speed-up comes from the smaller context, the
+fixed RAM budget and turning thinking off.
+
+Even so, expect minutes, not seconds:
 
 - **Generation** (flashcards, questions, roadmap) runs after a document is processed and samples
-  `GENERATION_MAX_BATCHES` sections (2 model calls each, ~1 min per call on CPU; default 5 here, use 10 with a GPU).
-  Each section is saved as soon as it is written, so cards and questions appear progressively, with a live
-  percentage in the UI. A worker restart mid-run resumes from the last saved section. The worker also re-queues
-  interrupted work by itself (on start-up and every 2 min). Real failures show **Retry** on the material
-  (`POST /study-materials/:id/retries`).
-- **Tutor** answers take ~10 s when the model is idle and a minute or two while it is also generating. The API
-  allows `TUTOR_TIMEOUT_MS=240000`, and the web proxy allows 300 s (`experimental.proxyTimeout` in
-  `next.config.ts`). A model that is down or busy returns a readable 503.
-- `LLM_TIMEOUT_MS=300000` bounds each generation call.
+  `GENERATION_MAX_BATCHES` sections. Each section takes 2 model calls (flashcards ~5 min, questions ~7 min). The default here is 3,
+  so an upload takes about 40 min (measured: a 78-section PDF got 22 flashcards, 11 questions and its roadmap in
+  39 min); use 10 with a GPU or hosted model. Each section is saved as soon as it is
+  written, so cards and questions appear progressively, with a live percentage in the UI. A worker restart
+  mid-run resumes from the last saved section. The worker also re-queues interrupted work by itself (on
+  start-up and every 2 min). Real failures show **Retry** on the material (`POST /study-materials/:id/retries`).
+- **Tutor** reads `TUTOR_TOP_K=4` passages, so answers take about 3–4 min when the model is idle. Answers are capped
+  at `TUTOR_MAX_TOKENS=400` and `TUTOR_TIMEOUT_MS=600000` (10 min). The web
+  proxy must allow longer: `API_PROXY_TIMEOUT_MS=660000` in `apps/web/.env.local`. A model that is down or
+  busy returns a readable 503.
+- `LLM_TIMEOUT_MS=900000` bounds each generation call, with `LLM_MAX_RETRIES=1`.
 
-To switch to a
-hosted provider instead, set `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_CHAT_MODEL`, clear the two prefix variables and,
-if the embedding size changes, add a migration altering `vector(768)` and re-ingest materials.
+**Other servers.** Any OpenAI-compatible server works through `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_CHAT_MODEL`:
+
+- **Ollama:** `npm run llm:setup` builds `edu-chat` from
+  [`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile). Use `LLM_JSON_MODE=json_object`,
+  plus `EMBEDDING_PROVIDER=api` and `EMBEDDING_MODEL=nomic-embed-text` if you want Ollama to serve embeddings
+  too.
+- **Hosted providers:** set the three variables above and clear the two prefix variables.
+- **Separate embeddings endpoint:** set `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`.
+- **Different embedding size:** if the dimension changes, add a migration altering `vector(768)` and re-ingest
+  materials.
 
 ## Features by role
 
