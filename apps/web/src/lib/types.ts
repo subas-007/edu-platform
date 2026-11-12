@@ -21,7 +21,8 @@ export interface ManagedUser extends SessionUser {
 
 export type MaterialStatus = 'QUEUED' | 'PROCESSING' | 'READY' | 'FAILED';
 
-export type GenerationStatus = 'PENDING' | 'GENERATING' | 'COMPLETED' | 'FAILED';
+/** CANCELLED: a flashcard / question run the student stopped (never set on a material itself). */
+export type GenerationStatus = 'PENDING' | 'GENERATING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
 
 export interface StudyMaterial {
   id: string;
@@ -39,6 +40,26 @@ export interface StudyMaterial {
   createdAt: string;
   uploadedBy: { id: string; email: string; role: UserRole };
   _count: { flashcards: number; examQuestions: number };
+  /** Flashcard / question runs the uploader asked for (latest per kind). */
+  generations?: MaterialGeneration[];
+}
+
+export type AssetKind = 'FLASHCARDS' | 'QUESTIONS';
+export type GenerationEngine = 'LOCAL' | 'HOSTED';
+export type GenerationRequestMode = 'REPLACE' | 'MORE';
+
+export interface MaterialGeneration {
+  kind: AssetKind;
+  /** PENDING = queued, GENERATING = running. */
+  status: GenerationStatus;
+  progress: number;
+  error: string | null;
+  engine: GenerationEngine;
+  engineLabel: string;
+  mode: GenerationRequestMode;
+  /** New items saved by the finished run. */
+  added: number | null;
+  updatedAt: string;
 }
 
 export interface Flashcard {
@@ -129,6 +150,40 @@ export interface TutorAnswer {
     similarity: number;
   }>;
 }
+
+/** GET /me/ai-settings: which model answers this student (the API key itself is never returned). */
+export interface AiSettings {
+  mode: 'LOCAL' | 'HOSTED';
+  provider: string | null;
+  model: string | null;
+  /** e.g. "…a1b2" when a key is saved. */
+  keyHint: string | null;
+  /** False when the server has no LLM_CREDENTIALS_KEY: only the local model is offered. */
+  hostedAvailable: boolean;
+  local: { label: string };
+  providers: Array<{
+    id: string;
+    label: string;
+    keysUrl: string;
+    suggestedModels: Array<{ id: string; note: string }>;
+  }>;
+}
+
+export interface AiSettingsSaved {
+  settings: AiSettings;
+  test: { ok: boolean; latencyMs: number } | null;
+}
+
+/** Events from POST /tutor/queries/stream, in the order they usually arrive. */
+export type TutorStreamEvent =
+  | { type: 'engine'; kind: 'local' | 'hosted'; provider: string; model: string }
+  | { type: 'stage'; stage: 'searching' | 'selecting' | 'waiting' }
+  | { type: 'sources'; citations: TutorAnswer['citations'] }
+  | { type: 'stage'; stage: 'reading'; promptTokens: number; estimatedSeconds: number }
+  | { type: 'stage'; stage: 'writing'; readSeconds: number }
+  | { type: 'text'; text: string }
+  | ({ type: 'done'; seconds: number } & TutorAnswer)
+  | { type: 'error'; status: number; message: string };
 
 export interface AttemptSummary {
   id: string;

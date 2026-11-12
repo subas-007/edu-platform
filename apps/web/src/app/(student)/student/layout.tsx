@@ -20,6 +20,10 @@ const SECTIONS: NavSection[] = [
       { href: '/student/history', label: 'Results & certificates', icon: 'results' },
     ],
   },
+  {
+    heading: 'Settings',
+    items: [{ href: '/student/ai-settings', label: 'AI model', icon: 'ai' }],
+  },
 ];
 
 export default function StudentLayout({ children }: { children: ReactNode }) {

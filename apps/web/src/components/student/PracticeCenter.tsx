@@ -100,6 +100,7 @@ export function PracticeCenter() {
               <GenerationNotice
                 material={current}
                 what="practice questions"
+                kind="QUESTIONS"
                 canRetry={canRetry(current)}
                 hasContent={current._count.examQuestions > 0}
               />

@@ -5,8 +5,9 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { GenerationStatus, MaterialFileType, MaterialStatus, UserRole } from '@prisma/client';
+import { AiMode, AssetKind, GenerationStatus, MaterialFileType, MaterialStatus, UserRole } from '@prisma/client';
 import { Queue } from 'bullmq';
+import { ModelResolverService } from '../ai/model-resolver.service';
 import { AuditLogService } from '../audit/audit-log.service';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
 import {
@@ -17,9 +18,12 @@ import {
 import {
   ASSET_GENERATION_QUEUE,
   AssetGenerationJob,
+  assetRequestJobId,
   enqueueUniqueJob,
   generationJobId,
   ingestionJobId,
+  LIVE_JOB_STATES,
+  QUEUED_JOB_STATES,
   MATERIAL_INGESTION_QUEUE,
   MaterialIngestionJob,
 } from '../queues/queue-names';
@@ -30,6 +34,7 @@ import {
   CreateUrlMaterialInput,
   ExportFlashcardsQuery,
   ListMaterialsQuery,
+  RequestGenerationInput,
   UpdateMaterialVisibilityInput,
 } from './study-materials.schemas';
 import { StudyMaterialsRepository } from './study-materials.repository';
@@ -41,6 +46,7 @@ export class StudyMaterialsService {
     private readonly accessPolicy: MaterialAccessPolicy,
     private readonly storage: MaterialStorageService,
     private readonly auditLog: AuditLogService,
+    private readonly models: ModelResolverService,
     @InjectQueue(MATERIAL_INGESTION_QUEUE)
     private readonly ingestionQueue: Queue<MaterialIngestionJob>,
     @InjectQueue(ASSET_GENERATION_QUEUE)
@@ -168,6 +174,100 @@ export class StudyMaterialsService {
       action: `material.retry_${stage}`,
       resourceType: 'material',
       resourceId: materialId,
+    });
+    return this.materialsRepository.findMaterialSummary(materialId, user.role === UserRole.STUDENT);
+  }
+
+  /**
+   * Queues a flashcard or question run on a stored material with the engine the user chose:
+   * LOCAL (this server's free model) or HOSTED (the provider and key saved under AI model
+   * settings). One run per kind at a time; flashcards and questions can run side by side.
+   */
+  async requestGeneration(user: AuthenticatedUser, materialId: string, input: RequestGenerationInput) {
+    const material = await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
+    if (!this.accessPolicy.canDeleteMaterial(user, material)) throw new NotFoundException();
+    if (material.status !== MaterialStatus.READY) {
+      throw new ConflictException('This document is still being stored and indexed. Try again when it shows Ready.');
+    }
+    if (material.generationStatus === GenerationStatus.PENDING || material.generationStatus === GenerationStatus.GENERATING) {
+      throw new ConflictException('Flashcards and questions are already being generated for this document.');
+    }
+    const what = input.kind === AssetKind.FLASHCARDS ? 'Flashcards' : 'Questions';
+    const current = await this.materialsRepository.findGeneration(materialId, input.kind);
+    if (current && (current.status === GenerationStatus.PENDING || current.status === GenerationStatus.GENERATING)) {
+      throw new ConflictException(`${what} are already being generated for this document.`);
+    }
+    // A run just stopped keeps its job for a few seconds while the model call is cancelled.
+    // Starting now would hand the new request to that job, so wait for it to end.
+    const previous = await this.generationQueue.getJob(assetRequestJobId(materialId, input.kind));
+    if (previous && LIVE_JOB_STATES.has(await previous.getState())) {
+      throw new ConflictException(`The previous ${what.toLowerCase()} run is still stopping. Try again in a few seconds.`);
+    }
+
+    let engineLabel = this.models.localLabel;
+    if (input.engine === AiMode.HOSTED) {
+      // Surfaces now (not minutes later in the worker) when no usable key is saved.
+      const hosted = await this.models.hostedForUser(user.id).catch(() => null);
+      if (!hosted) {
+        throw new BadRequestException(
+          'No hosted model is set up. Add your API key under Settings → AI model, or choose the local model.',
+        );
+      }
+      engineLabel = `${hosted.providerLabel} · ${hosted.model}`;
+    }
+
+    await this.materialsRepository.upsertGeneration(materialId, input.kind, {
+      status: GenerationStatus.PENDING,
+      progress: 0,
+      error: null,
+      added: null,
+      engine: input.engine,
+      engineLabel,
+      mode: input.mode,
+      requestedById: user.id,
+    });
+    await enqueueUniqueJob(
+      this.generationQueue,
+      'generate-on-request',
+      { materialId, kind: input.kind, engine: input.engine, mode: input.mode, requestedById: user.id },
+      assetRequestJobId(materialId, input.kind),
+    );
+    await this.auditLog.recordAuditEvent({
+      actorId: user.id,
+      action: 'material.generation_requested',
+      resourceType: 'material',
+      resourceId: materialId,
+      metadata: { kind: input.kind, engine: input.engine, mode: input.mode },
+    });
+    return this.materialsRepository.findMaterialSummary(materialId, user.role === UserRole.STUDENT);
+  }
+
+  /**
+   * Stops a flashcard or question run. Whatever it already made is kept, and nothing is
+   * removed (a stopped Regenerate leaves the earlier set in place). A queued run is taken off
+   * the queue; a running one sees the stop within seconds and cancels its model call.
+   */
+  async stopGeneration(user: AuthenticatedUser, materialId: string, kind: AssetKind) {
+    const material = await this.accessPolicy.getReadableMaterialOrThrow(user, materialId);
+    if (!this.accessPolicy.canDeleteMaterial(user, material)) throw new NotFoundException();
+    const what = kind === AssetKind.FLASHCARDS ? 'Flashcards' : 'Questions';
+    if (!(await this.materialsRepository.stopGeneration(materialId, kind))) {
+      throw new ConflictException(`${what} are not being generated right now.`);
+    }
+
+    const job = await this.generationQueue.getJob(assetRequestJobId(materialId, kind));
+    if (!job || QUEUED_JOB_STATES.has(await job.getState())) {
+      // No worker will see this run again (a queued job may have made some items before a retry).
+      const startedAt = job?.data.startedAt;
+      await job?.remove().catch(() => undefined); // picked up meanwhile: the worker then stops it
+      await this.materialsRepository.recordStoppedCount(materialId, kind, startedAt);
+    }
+    await this.auditLog.recordAuditEvent({
+      actorId: user.id,
+      action: 'material.generation_stopped',
+      resourceType: 'material',
+      resourceId: materialId,
+      metadata: { kind },
     });
     return this.materialsRepository.findMaterialSummary(materialId, user.role === UserRole.STUDENT);
   }

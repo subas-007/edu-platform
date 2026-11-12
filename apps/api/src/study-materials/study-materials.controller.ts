@@ -13,6 +13,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { AssetKind } from '@prisma/client';
 import { Throttle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
 import {
@@ -26,12 +27,15 @@ import { Permission } from '../common/security/permissions';
 import { uuidParam } from '../common/validation';
 import { env } from '../config/env';
 import {
+  assetKindParamSchema,
   CreateUrlMaterialInput,
   createUrlMaterialSchema,
   ExportFlashcardsQuery,
   exportFlashcardsQuerySchema,
   ListMaterialsQuery,
   listMaterialsQuerySchema,
+  RequestGenerationInput,
+  requestGenerationSchema,
   UpdateMaterialVisibilityInput,
   updateMaterialVisibilitySchema,
   uploadMaterialFieldsSchema,
@@ -114,6 +118,35 @@ export class StudyMaterialsController {
     @Body(zodBody(updateMaterialVisibilitySchema)) body: UpdateMaterialVisibilityInput,
   ) {
     return this.materialsService.updateMaterialVisibility(user, id, body);
+  }
+
+  /**
+   * Generate flashcards or questions for a stored material, with the model the student picks
+   * (local or their hosted key): a fresh set (REPLACE) or additional ones (MORE).
+   */
+  @AuthenticatedOnly() // owner-or-moderator check in service
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post(':materialId/generations')
+  @HttpCode(202)
+  requestGeneration(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('materialId', uuidParam) id: string,
+    @Body(zodBody(requestGenerationSchema)) body: RequestGenerationInput,
+  ) {
+    return this.materialsService.requestGeneration(user, id, body);
+  }
+
+  /** Stops a queued or running flashcard / question run; items already made are kept. */
+  @AuthenticatedOnly() // owner-or-moderator check in service
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post(':materialId/generations/:kind/stop')
+  @HttpCode(200)
+  stopGeneration(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('materialId', uuidParam) id: string,
+    @Param('kind', new ZodValidationPipe(assetKindParamSchema)) kind: AssetKind,
+  ) {
+    return this.materialsService.stopGeneration(user, id, kind);
   }
 
   /** Re-runs whichever pipeline stage failed (processing, or flashcard/question generation). */

@@ -8,7 +8,11 @@ import { apiRequest, ApiError } from '@/lib/api-client';
 const ACCEPTED = '.pdf,.docx,.png,.jpg,.jpeg';
 const MAX_BYTES = 20 * 1024 * 1024;
 
-export function UploadMaterialForm() {
+/**
+ * `onDemand` (student uploads): the document is only stored and indexed; flashcards and
+ * questions are generated later from its study page. Staff uploads generate automatically.
+ */
+export function UploadMaterialForm({ onDemand = false }: { onDemand?: boolean }) {
   const queryClient = useQueryClient();
   const fileInput = useRef<HTMLInputElement>(null);
   const [mode, setMode] = useState<'file' | 'url'>('file');
@@ -32,7 +36,11 @@ export function UploadMaterialForm() {
       return apiRequest('/study-materials/files', { method: 'POST', body: form });
     },
     onSuccess: () => {
-      setDone(`“${title}” is being processed. It appears below and you'll get a notification when it's ready.`);
+      setDone(
+        onDemand
+          ? `“${title}” is being stored. When it shows Ready, open it to generate flashcards or questions with the model you choose.`
+          : `“${title}” is being processed. It appears below and you'll get a notification when it's ready.`,
+      );
       setTitle('');
       setUrl('');
       setFile(null);
@@ -118,13 +126,15 @@ export function UploadMaterialForm() {
           <input className="input" placeholder="Title" required maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
         </label>
         <button className="btn-primary" disabled={upload.isPending || (mode === 'file' && !file)}>
-          {upload.isPending ? 'Uploading…' : 'Upload & process'}
+          {upload.isPending ? 'Uploading…' : onDemand ? 'Upload' : 'Upload & process'}
         </button>
       </div>
       {error && <p role="alert" className="text-sm text-red-300">{error}</p>}
       {done && <p role="status" className="text-sm text-aqua-300">{done}</p>}
       <p className="text-xs text-slate-500">
-        Already-analysed documents are recognised automatically and reuse their existing flashcards and questions.
+        {onDemand
+          ? 'Uploading only stores the document. You choose when to generate flashcards or questions, and with which model.'
+          : 'Already-analysed documents are recognised automatically and reuse their existing flashcards and questions.'}
       </p>
     </form>
   );

@@ -6,13 +6,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   ASSET_GENERATION_QUEUE,
   AssetGenerationJob,
+  assetRequestJobId,
   enqueueUniqueJob,
   generationJobId,
   ingestionJobId,
   MATERIAL_INGESTION_QUEUE,
   MaterialIngestionJob,
 } from '../queues/queue-names';
-import { GENERATION_FAILED_MESSAGE } from './asset-generation.processor';
+import { GENERATION_FAILED_MESSAGE, requestFailedMessage } from './asset-generation.processor';
 
 const SWEEP_INTERVAL_MS = 2 * 60_000;
 /** Don't race the API, which enqueues right after creating the row. */
@@ -106,10 +107,42 @@ export class PipelineRecoveryService implements OnApplicationBootstrap, OnApplic
         }
         if (action === 'requeued' || action === 'failed') this.logger.log(`Material ${id}: generation ${action}`);
       }
+
+      await this.sweepRequestedRuns(cutoff);
     } catch (error) {
       this.logger.warn(`Pipeline recovery sweep failed: ${error}`);
     } finally {
       this.running = false;
+    }
+  }
+
+  /** Flashcard / question runs students asked for (one row per material and kind). */
+  private async sweepRequestedRuns(cutoff: Date) {
+    const active = [GenerationStatus.PENDING, GenerationStatus.GENERATING];
+    const unfinished = await this.prisma.materialGeneration.findMany({
+      where: { status: { in: active }, updatedAt: { lt: cutoff } },
+      select: { materialId: true, kind: true, engine: true, mode: true, requestedById: true },
+      take: 100,
+    });
+    for (const run of unfinished) {
+      const { materialId, kind } = run;
+      const data: AssetGenerationJob = {
+        materialId,
+        kind,
+        engine: run.engine,
+        mode: run.mode,
+        requestedById: run.requestedById,
+      };
+      const action = await this.recover(this.generationQueue, assetRequestJobId(materialId, kind), 'generate-on-request', data, () =>
+        this.prisma.materialGeneration.count({ where: { materialId, kind, status: { in: active } } }).then((n) => n > 0),
+      );
+      if (action === 'failed') {
+        await this.prisma.materialGeneration.updateMany({
+          where: { materialId, kind, status: { in: active } },
+          data: { status: GenerationStatus.FAILED, error: requestFailedMessage(kind) },
+        });
+      }
+      if (action === 'requeued' || action === 'failed') this.logger.log(`Material ${materialId}: ${kind} run ${action}`);
     }
   }
 

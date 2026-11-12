@@ -1,14 +1,15 @@
 'use client';
 
-import { AlertTriangle, CheckCircle2, Clock, Loader2, RotateCcw, Sparkles } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, Loader2, RotateCcw, Sparkles, Square } from 'lucide-react';
+import Link from 'next/link';
 import { ApiError } from '@/lib/api-client';
-import type { StudyMaterial } from '@/lib/types';
-import { pipelineStage, useRetryMaterial } from '@/lib/use-materials';
+import type { AssetKind, StudyMaterial } from '@/lib/types';
+import { activeRun, pipelineStage, useRetryMaterial, useStopGeneration } from '@/lib/use-materials';
 import { ProgressBar } from './ui';
 
 type PipelineMaterial = Pick<
   StudyMaterial,
-  'id' | 'status' | 'generationStatus' | 'generationProgress' | 'generationError' | 'failureReason' | 'uploadedBy'
+  'id' | 'status' | 'generationStatus' | 'generationProgress' | 'generationError' | 'failureReason' | 'uploadedBy' | 'generations'
 >;
 
 /** One badge for the whole pipeline: Queued → Processing → Generating n% → Ready / Failed. */
@@ -67,6 +68,30 @@ export function RetryMaterialButton({ materialId, className = 'btn-secondary btn
   );
 }
 
+/** Stops a flashcard / question run the student asked for; what it already made is kept. */
+export function StopGenerationButton({ materialId, kind, noun }: { materialId: string; kind: AssetKind; noun: string }) {
+  const stop = useStopGeneration(materialId, kind);
+  return (
+    <span className="inline-flex flex-col items-end gap-1">
+      <button
+        type="button"
+        className="btn-secondary btn-sm"
+        onClick={() => stop.mutate()}
+        disabled={stop.isPending}
+        aria-label={`Stop generating ${noun}`}
+      >
+        {stop.isPending ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : <Square className="h-3.5 w-3.5" aria-hidden />}
+        {stop.isPending ? 'Stopping…' : 'Stop'}
+      </button>
+      {stop.error && (
+        <span role="alert" className="text-xs text-red-300">
+          {stop.error instanceof ApiError ? stop.error.message : 'Could not stop'}
+        </span>
+      )}
+    </span>
+  );
+}
+
 /**
  * Explains why a material has no flashcards / questions / roadmap yet, with live progress
  * while the local model works and a Retry button when something failed.
@@ -77,6 +102,7 @@ export function GenerationNotice({
   what,
   canRetry,
   hasContent = false,
+  kind,
 }: {
   material: PipelineMaterial;
   /** e.g. "flashcards", "practice questions" */
@@ -84,8 +110,27 @@ export function GenerationNotice({
   canRetry: boolean;
   /** Some items already exist (generation saves batch by batch). */
   hasContent?: boolean;
+  /** Which on-demand run this view is about (student uploads generate on request). */
+  kind?: AssetKind;
 }) {
   const stage = pipelineStage(material);
+  const run = kind ? activeRun(material, kind) : undefined;
+
+  if (run) {
+    return (
+      <div role="status" className="space-y-2 rounded-xl border border-aqua-500/30 bg-aqua-500/5 p-4">
+        <div className="flex items-center gap-2 text-sm text-aqua-100">
+          <Sparkles className="h-4 w-4 shrink-0 text-aqua-300" aria-hidden />
+          <span className="flex-1">
+            {run.status === 'PENDING' ? `Waiting to start writing ${what}…` : `${run.engineLabel} is writing ${what}. New ones appear here automatically.`}
+          </span>
+          <span className="text-xs text-aqua-200">{run.progress}%</span>
+          {canRetry && <StopGenerationButton materialId={material.id} kind={run.kind} noun={what} />}
+        </div>
+        <ProgressBar value={Math.max(3, run.progress)} />
+      </div>
+    );
+  }
 
   if (stage === 'failed' || stage === 'generation-failed') {
     const reason =
@@ -109,6 +154,16 @@ export function GenerationNotice({
 
   if (stage === 'complete') {
     if (hasContent) return null;
+    if (material.uploadedBy.role === 'STUDENT' && canRetry) {
+      return (
+        <div role="status" className="flex flex-wrap items-center gap-3 rounded-xl border border-ink-600 bg-ink-800/60 p-4 text-sm text-slate-300">
+          <span className="flex-1">No {what} yet. Generate them on the document's study page, with the model you choose.</span>
+          <Link href={`/student/materials/${material.id}`} className="btn-primary btn-sm">
+            <Sparkles className="h-4 w-4" aria-hidden /> Generate {what}
+          </Link>
+        </div>
+      );
+    }
     return (
       <div role="status" className="rounded-xl border border-ink-600 bg-ink-800/60 p-4 text-sm text-slate-300">
         No {what} are available for this document

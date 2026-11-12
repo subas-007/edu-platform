@@ -1,36 +1,26 @@
 import { Global, Injectable, Logger, Module, OnModuleInit } from '@nestjs/common';
-import OpenAI, { type ClientOptions } from 'openai';
-import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { Agent, fetch as undiciFetch } from 'undici';
+import OpenAI from 'openai';
 import type { z, ZodTypeAny } from 'zod';
 import { env } from '../config/env';
 import { LocalEmbedder } from './local-embedder';
+import { ModelPriorityService } from './model-priority.service';
+import { ModelResolverService } from './model-resolver.service';
+import { ChatMessage, ChatModel, ModelError } from './providers/chat-model';
+
+export type { ChatMessage, ChatModel } from './providers/chat-model';
 
 const EMBEDDING_BATCH_SIZE = 64;
+/** Room for a JSON answer with several cards/questions (local servers cap this themselves). */
+const STRUCTURED_MAX_TOKENS = 4_000;
 
 /** The model server is down, unreachable or too slow — as opposed to a bad model answer. */
 export function isLlmUnavailableError(error: unknown): boolean {
   return (
-    error instanceof OpenAI.APIConnectionError || // includes APIConnectionTimeoutError
+    (error instanceof ModelError && error.kind === 'unavailable') ||
+    error instanceof OpenAI.APIConnectionError || // embeddings API (includes timeouts)
     (error instanceof OpenAI.APIError && (error.status === 503 || error.status === 502 || error.status === 504))
   );
 }
-
-/**
- * Local servers (colibri, llama.cpp…) send response headers only once the whole answer is
- * generated. Node's built-in fetch gives up after 300 s without headers (UND_ERR_HEADERS_TIMEOUT),
- * which would cap every model call at 5 minutes regardless of LLM_TIMEOUT_MS. This agent defers
- * to the SDK's own per-request timeout instead.
- */
-const modelHttpAgent = new Agent({
-  headersTimeout: env.LLM_TIMEOUT_MS + 60_000,
-  bodyTimeout: env.LLM_TIMEOUT_MS + 60_000,
-  connectTimeout: 10_000,
-});
-const modelClientTransport = {
-  fetch: undiciFetch as unknown as typeof fetch,
-  fetchOptions: { dispatcher: modelHttpAgent } as unknown as ClientOptions['fetchOptions'],
-};
 
 /** Serialises an embedding for a parameterised `$1::vector` cast. */
 export function toVectorLiteral(embedding: number[]): string {
@@ -67,32 +57,24 @@ export function extractJsonObject(raw: string): unknown {
 }
 
 /**
- * Provider-agnostic gateway over any OpenAI-compatible API (OpenAI, Azure, vLLM, Ollama,
- * LM Studio, colibri) plus optional in-process embeddings. All model I/O goes through here.
+ * Gateway for all model I/O. Chat goes to a ChatModel: the server's local model by default,
+ * or the hosted model a student connected (ModelResolverService). Embeddings always use the
+ * server's own embedding model, so document search is the same whoever answers.
  */
 @Injectable()
 export class LlmService implements OnModuleInit {
   private readonly logger = new Logger(LlmService.name);
-  private readonly client = new OpenAI({
-    apiKey: env.LLM_API_KEY,
-    baseURL: env.LLM_BASE_URL,
+  /** Only for EMBEDDING_PROVIDER=api. */
+  private readonly embeddingClient = new OpenAI({
+    apiKey: env.EMBEDDING_API_KEY || env.LLM_API_KEY,
+    baseURL: env.EMBEDDING_BASE_URL || env.LLM_BASE_URL,
     timeout: env.LLM_TIMEOUT_MS,
     maxRetries: env.LLM_MAX_RETRIES,
-    ...modelClientTransport,
   });
-  /** Embeddings may be served by a different endpoint than chat. */
-  private readonly embeddingClient =
-    env.EMBEDDING_PROVIDER === 'api' && env.EMBEDDING_BASE_URL
-      ? new OpenAI({
-          apiKey: env.EMBEDDING_API_KEY || env.LLM_API_KEY,
-          baseURL: env.EMBEDDING_BASE_URL,
-          timeout: env.LLM_TIMEOUT_MS,
-          maxRetries: env.LLM_MAX_RETRIES,
-          ...modelClientTransport,
-        })
-      : this.client;
   private readonly localEmbedder = env.EMBEDDING_PROVIDER === 'local' ? new LocalEmbedder() : null;
   private readonly supportsDimensionsParam = env.EMBEDDING_MODEL.startsWith('text-embedding-3');
+
+  constructor(private readonly models: ModelResolverService) {}
 
   onModuleInit() {
     // Warm the local model in the background so the first upload/tutor question doesn't wait for it.
@@ -136,29 +118,28 @@ export class LlmService implements OnModuleInit {
     return embeddings;
   }
 
-  /** JSON completion validated against a Zod schema; one corrective retry. */
+  /**
+   * JSON completion validated against a Zod schema; one corrective retry. `signal` cancels the
+   * request (the model server stops working on it), e.g. to let a tutor question go first.
+   */
   async generateStructuredOutput<T extends ZodTypeAny>(
     schema: T,
     systemPrompt: string,
     userPrompt: string,
+    options: { signal?: AbortSignal; model?: ChatModel } = {},
   ): Promise<z.infer<T>> {
+    const model = options.model ?? this.models.local;
     for (let attempt = 1; attempt <= 2; attempt++) {
-      const completion = await this.client.chat.completions.create({
-        model: env.LLM_CHAT_MODEL,
-        temperature: 0.2,
-        ...(env.LLM_JSON_MODE === 'json_object' ? { response_format: { type: 'json_object' as const } } : {}),
+      const raw = await model.complete({
         messages: [
-          {
-            role: 'system',
-            content:
-              env.LLM_JSON_MODE === 'prompt'
-                ? `${systemPrompt}\nRespond with the JSON object only: no markdown, no explanations.`
-                : systemPrompt,
-          },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
+        maxTokens: STRUCTURED_MAX_TOKENS,
+        temperature: 0.2,
+        json: true,
+        signal: options.signal,
       });
-      const raw = completion.choices[0]?.message?.content ?? '';
       try {
         const parsed = schema.safeParse(extractJsonObject(raw));
         if (parsed.success) return parsed.data;
@@ -171,23 +152,90 @@ export class LlmService implements OnModuleInit {
   }
 
   async generateChatCompletion(
-    messages: ChatCompletionMessageParam[],
+    messages: ChatMessage[],
     maxTokens = 900,
-    requestOptions?: { timeoutMs?: number; maxRetries?: number },
+    requestOptions: { timeoutMs?: number; maxRetries?: number; signal?: AbortSignal; model?: ChatModel } = {},
   ) {
-    const completion = await this.client.chat.completions.create(
-      {
-        model: env.LLM_CHAT_MODEL,
-        temperature: 0.1,
-        max_tokens: maxTokens,
-        messages,
-      },
-      { timeout: requestOptions?.timeoutMs, maxRetries: requestOptions?.maxRetries },
-    );
-    return stripReasoning(completion.choices[0]?.message?.content ?? '');
+    const model = requestOptions.model ?? this.models.local;
+    const text = await model.complete({
+      messages,
+      maxTokens,
+      temperature: 0.1,
+      signal: requestOptions.signal,
+      timeoutMs: requestOptions.timeoutMs,
+      maxRetries: requestOptions.maxRetries,
+    });
+    return stripReasoning(text);
+  }
+
+  /**
+   * Streams a chat answer as it is written. Yields text pieces (reasoning blocks removed),
+   * then one `usage` event with the server's token counts when it reports them.
+   * Cancelling `signal` stops the request and frees the model.
+   */
+  async *streamChatCompletion(
+    messages: ChatMessage[],
+    maxTokens: number,
+    signal: AbortSignal,
+    model: ChatModel = this.models.local,
+  ): AsyncGenerator<ChatStreamEvent> {
+    const filter = new ReasoningFilter();
+    for await (const event of model.stream({
+      messages,
+      maxTokens,
+      temperature: 0.1,
+      signal,
+      maxRetries: 0,
+      timeoutMs: env.LLM_TIMEOUT_MS,
+    })) {
+      if (event.type === 'usage') {
+        yield event;
+        continue;
+      }
+      const piece = filter.push(event.text);
+      if (piece) yield { type: 'text', text: piece };
+    }
+    const rest = filter.flush();
+    if (rest) yield { type: 'text', text: rest };
+  }
+}
+
+export type ChatStreamEvent =
+  | { type: 'text'; text: string }
+  | { type: 'usage'; promptTokens: number; completionTokens: number };
+
+/**
+ * Streaming counterpart of stripReasoning: holds back a leading <think>…</think> block and
+ * passes everything after it through unchanged. (Servers run with thinking off, like
+ * colibri --no-think, never send one; this only keeps a thinking model's notes off screen.)
+ */
+export class ReasoningFilter {
+  private buffer = '';
+  private passthrough = false;
+
+  push(piece: string): string {
+    if (this.passthrough) return piece;
+    this.buffer += piece;
+    const close = this.buffer.search(/<\/think>/i);
+    if (close !== -1) {
+      this.passthrough = true;
+      return this.buffer.slice(close + '</think>'.length).trimStart();
+    }
+    const head = this.buffer.trimStart().toLowerCase();
+    if (head === '' || head.startsWith('<think>') || '<think>'.startsWith(head)) return ''; // wait
+    this.passthrough = true;
+    return this.buffer.trimStart();
+  }
+
+  /** Whatever is still held when the stream ends (an unterminated reasoning block is dropped). */
+  flush(): string {
+    return this.passthrough ? '' : stripReasoning(this.buffer.replace(/^\s*<think>[\s\S]*$/i, ''));
   }
 }
 
 @Global()
-@Module({ providers: [LlmService], exports: [LlmService] })
+@Module({
+  providers: [LlmService, ModelPriorityService, ModelResolverService],
+  exports: [LlmService, ModelPriorityService, ModelResolverService],
+})
 export class LlmModule {}

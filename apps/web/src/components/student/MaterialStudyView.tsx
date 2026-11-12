@@ -1,14 +1,16 @@
 'use client';
 
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Bot, Recycle } from 'lucide-react';
 import Link from 'next/link';
+import { useEffect } from 'react';
 import { apiRequest, ApiError } from '@/lib/api-client';
 import type { StudyMaterial } from '@/lib/types';
 import { isPipelineBusy, PIPELINE_POLL_MS, pipelineStage, useCanRetryMaterial } from '@/lib/use-materials';
 import { GenerationNotice, MaterialPipelineBadge } from '../MaterialPipeline';
 import { EmptyState, PageHeader, Spinner } from '../ui';
 import { FlashcardDeck } from './FlashcardDeck';
+import { GenerateAssetsPanel } from './GenerateAssetsPanel';
 import { StartExamPanel } from './StartExamPanel';
 import { StudyRoadmapTracker } from './StudyRoadmapTracker';
 
@@ -19,6 +21,15 @@ export function MaterialStudyView({ materialId }: { materialId: string }) {
     refetchInterval: (q) => (q.state.data && isPipelineBusy(q.state.data) ? PIPELINE_POLL_MS : false),
   });
   const canRetry = useCanRetryMaterial();
+  const queryClient = useQueryClient();
+  const flashcardRun = material?.generations?.find((g) => g.kind === 'FLASHCARDS');
+
+  // A finished (or stopped) run may have changed the deck: fetch it once more after the last poll.
+  useEffect(() => {
+    if (flashcardRun?.status === 'COMPLETED' || flashcardRun?.status === 'CANCELLED') {
+      void queryClient.invalidateQueries({ queryKey: ['flashcards', materialId] });
+    }
+  }, [flashcardRun?.status, flashcardRun?.updatedAt, materialId, queryClient]);
 
   if (isLoading) return <Spinner />;
   if (error || !material) {
@@ -27,6 +38,9 @@ export function MaterialStudyView({ materialId }: { materialId: string }) {
         action={<Link href="/student/materials" className="btn-secondary">Back to materials</Link>} />
     );
   }
+
+  // The uploader of a student document asks for flashcards / questions with the model they pick.
+  const onDemand = material.uploadedBy.role === 'STUDENT' && canRetry(material);
 
   return (
     <>
@@ -50,22 +64,29 @@ export function MaterialStudyView({ materialId }: { materialId: string }) {
           </Link>
         }
       />
-      <GenerationNotice
-        material={material}
-        what="flashcards, questions and the roadmap"
-        canRetry={canRetry(material)}
-        hasContent={material._count.flashcards + material._count.examQuestions > 0}
-      />
+      {/* Student uploads are stored only; flashcards and questions are generated here on request. */}
+      {!(onDemand && pipelineStage(material) === 'complete') && (
+        <GenerationNotice
+          material={material}
+          what="flashcards, questions and the roadmap"
+          canRetry={canRetry(material)}
+          hasContent={material._count.flashcards + material._count.examQuestions > 0}
+        />
+      )}
+      {onDemand && pipelineStage(material) === 'complete' && <GenerateAssetsPanel material={material} />}
       {material.status === 'READY' && (
         <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr]">
           <div className="space-y-6">
-            <FlashcardDeck materialId={material.id} title={material.title} generating={isPipelineBusy(material)} />
+            {(!onDemand || material._count.flashcards > 0 || flashcardRun?.status === 'GENERATING') && (
+              <FlashcardDeck materialId={material.id} title={material.title} generating={isPipelineBusy(material)} />
+            )}
             {material._count.examQuestions > 0 && (
               <StartExamPanel materialId={material.id} availableQuestions={material._count.examQuestions} />
             )}
           </div>
           <StudyRoadmapTracker
-            key={pipelineStage(material)} // refetch once generation finishes
+            // refetch once generation finishes (a student's first run also names the sections)
+            key={[pipelineStage(material), ...(material.generations ?? []).map((g) => g.status)].join('-')}
             materialId={material.id}
             generating={isPipelineBusy(material)}
           />

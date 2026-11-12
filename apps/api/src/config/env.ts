@@ -65,10 +65,45 @@ const envSchema = z.object({
   /** Longest tutor answer. Answer time ≈ prompt processing + this ÷ the model's tokens/s. */
   TUTOR_MAX_TOKENS: z.coerce.number().int().min(64).max(4_000).default(900),
   /**
+   * Token budget for the document text sent with a tutor question. When set, only the sentences
+   * of the retrieved passages most relevant to the question are sent (ranked with the embedding
+   * model), which cuts the model's reading time. 0 = send the whole passages (fast hosted models).
+   */
+  TUTOR_CONTEXT_TOKENS: z.coerce.number().int().min(0).max(16_000).default(0),
+  /** Earlier chat messages re-sent with a question (the model re-reads them every time). */
+  TUTOR_HISTORY_MESSAGES: z.coerce.number().int().min(0).max(12).default(6),
+  /**
+   * While a student waits for the tutor, background flashcard/question generation steps aside
+   * (its in-flight model call is cancelled and retried afterwards). Matters when one local model
+   * serves both; turn off for a hosted model that serves requests in parallel.
+   */
+  TUTOR_PRIORITY: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  /**
+   * Starting estimate of how fast the model reads a prompt (tokens/s), used for the tutor's
+   * progress bar until the first answer measures the real speed.
+   */
+  TUTOR_READ_TOKENS_PER_SEC: z.coerce.number().positive().max(100_000).default(12),
+  /**
    * Batches of 3 adjacent chunks sampled per material; each batch costs 2 LLM calls.
    * Lower it on CPU-only machines (each local call can take ~1 min).
    */
   GENERATION_MAX_BATCHES: z.coerce.number().int().min(1).max(30).default(10),
+  /** Batches when the uploader uses a hosted model (fast, so the whole document can be covered). */
+  GENERATION_MAX_BATCHES_HOSTED: z.coerce.number().int().min(1).max(30).default(10),
+  /**
+   * 32 random bytes, base64: encrypts students' own provider API keys at rest
+   * (generate: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))").
+   * Unset = the hosted-model option is unavailable; everyone uses the local model.
+   */
+  LLM_CREDENTIALS_KEY: z
+    .string()
+    .optional()
+    .refine((v) => !v || Buffer.from(v, 'base64').length === 32, 'must be 32 bytes, base64-encoded'),
+  /** Name shown to students for the local model (defaults to LLM_CHAT_MODEL). */
+  LLM_LOCAL_LABEL: z.string().optional(),
 });
 
 export type AppEnv = z.infer<typeof envSchema>;

@@ -23,7 +23,7 @@ cd apps/api
 cp .env.example .env
 npm install
 npm run keys:generate                      # paste private+public into apps/api/.env, public into apps/web/.env.local
-# start the local model server (see "Local LLM" below); set SEED_ADMIN_PASSWORD in .env
+npm run llm:setup                          # local model in Ollama (see "AI models" below); set SEED_ADMIN_PASSWORD in .env
 npm run db:deploy                          # applies migrations, incl. the HNSW vector index
 npm run db:seed                            # first admin — then delete SEED_ADMIN_PASSWORD from .env
 npm run dev:api                            # :4000
@@ -34,63 +34,89 @@ cp .env.example .env.local                 # JWT_PUBLIC_KEY_B64 + API_INTERNAL_U
 npm install && npm run dev                 # http://localhost:3005
 ```
 
-### Local LLM (default)
+### AI models: local (free) or hosted (student's own key)
 
-All model calls stay on the machine, so no material text leaves it.
+Each student chooses under **Settings → AI model** who answers their tutor questions and writes flashcards and
+questions from the documents they upload:
 
-| Role | Served by | Model | Notes |
+| Option | Cost | Speed (measured, i7-13620H CPU) | Privacy |
 |---|---|---|---|
-| Chat (tutor, flashcards, questions, roadmap) | [colibri](http://127.0.0.1:8000) — OpenAI-compatible server at `http://127.0.0.1:8000/v1` | `qwen3.6-colibri` (Qwen3.6-35B-A3B MoE, INT4 experts + INT8 trunk) | Start it with `npm run llm:start` (from `apps/api`) |
-| Embeddings | the API and worker themselves (`EMBEDDING_PROVIDER=local`, transformers.js / ONNX on CPU) | `nomic-ai/nomic-embed-text-v1.5` | 768 dims, `search_document:` / `search_query:` prefixes. ~520 MB is downloaded once into `apps/api/.cache/models` |
+| **Local model** (default): Qwen3 4B in [Ollama](https://ollama.com) on this server | free | tutor answer ~20–35 s; one flashcard call ~40 s | documents never leave the server |
+| **Hosted model**: the student's own API key for Anthropic, OpenAI, Google Gemini, Groq or OpenRouter | billed to the student's account | seconds | the passages answering each question go to that provider (the page says so) |
 
-colibri needs two settings that other servers don't:
+Staff uploads always use the local model. Document search (embeddings) always runs in-process with
+`nomic-ai/nomic-embed-text-v1.5` (768 dims, ~520 MB downloaded once into `apps/api/.cache/models`), so it is the same
+whichever model answers.
 
-- **No `/embeddings` endpoint**, so embeddings run in-process. It is the same nomic model Ollama served before, and
-  its vectors match the stored ones exactly (cosine 1.0), so earlier uploads need no re-indexing.
-- **Rejects `response_format`** ("grammars are not supported"), so `LLM_JSON_MODE=prompt` asks for JSON in the
-  prompt. Replies are parsed leniently (code fences, `<think>` blocks and surrounding prose are tolerated) and
-  validated with Zod, with one corrective retry.
+**Local model setup.** Install Ollama (`winget install Ollama.Ollama` on Windows), then `npm run llm:setup` in
+`apps/api`. It pulls `qwen3:4b-instruct` (2.5 GB) and builds `edu-chat` from
+[`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile) with an 8k context (Ollama's 4k default is
+too small for a generation prompt plus its JSON answer). In `apps/api/.env`: `LLM_BASE_URL=http://127.0.0.1:11434/v1`,
+`LLM_API_KEY=ollama`, `LLM_CHAT_MODEL=edu-chat`, `LLM_JSON_MODE=json_object`. `npm run llm:bench` times one real
+flashcard call.
 
-`npm run llm:start` ([`apps/api/scripts/start-llm.ps1`](apps/api/scripts/start-llm.ps1)) sets the model up for
-this app: 16k context instead of 64k, a fixed 12 GB RAM budget, thinking off, INT4 experts and an INT8 trunk.
-`npm run llm:bench` times one real flashcard call so changes can be measured. Results on the dev machine
-(i7-13620H, 32 GB RAM, NVMe; 1,359-token prompt):
+Why this model: the earlier default, Qwen3.6-35B on colibri, needs ~22 GB and did not fit in this laptop's free RAM,
+so it re-read weights from disk on every question (prompt reading 4–12 tokens/s; a tutor answer took 2–9 minutes).
+Qwen3 4B fits in RAM: prompt reading ~85 tokens/s, writing ~12–14 tokens/s. Same tutor question, same passages:
 
-| colibri configuration | Prompt reading | Writing | One call |
-|---|---|---|---|
-| `coli web --auto-tier` (original, 64k context) | 267 s | 1.5 tokens/s | 10.7 min |
-| `llm:start -DenseBits 4` (INT4 trunk) | 310 s | 4.3 tokens/s | 7.8 min |
-| **`llm:start`** (INT8 trunk, default) | **118 s** | **5.3 tokens/s** | **3.7 min** |
+| Model | First words | Full answer |
+|---|---|---|
+| Qwen3.6-35B on colibri (warm) | 82 s | 110 s |
+| **Qwen3 4B on Ollama** | **10 s** | **22 s** |
 
-The experts were already INT4 in every run. Also storing the trunk in INT4 is *slower* on this CPU: it has fast
-INT8 dot products (AVX-VNNI), while INT4 must be unpacked first. The speed-up comes from the smaller context, the
-fixed RAM budget and turning thinking off.
+`qwen3.5:4b` was also tried and dropped: it "thinks" before answering and spent the whole answer budget on hidden
+reasoning. colibri still works (`npm run llm:start`, `LLM_BASE_URL=http://127.0.0.1:8000/v1`, `LLM_JSON_MODE=prompt`).
 
-Even so, expect minutes, not seconds:
+**Hosted models.** Set `LLM_CREDENTIALS_KEY` (32 random bytes, base64:
+`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`); without it only the local model is
+offered. Then:
 
-- **Generation** (flashcards, questions, roadmap) runs after a document is processed and samples
-  `GENERATION_MAX_BATCHES` sections. Each section takes 2 model calls (flashcards ~5 min, questions ~7 min). The default here is 3,
-  so an upload takes about 40 min (measured: a 78-section PDF got 22 flashcards, 11 questions and its roadmap in
-  39 min); use 10 with a GPU or hosted model. Each section is saved as soon as it is
-  written, so cards and questions appear progressively, with a live percentage in the UI. A worker restart
-  mid-run resumes from the last saved section. The worker also re-queues interrupted work by itself (on
-  start-up and every 2 min). Real failures show **Retry** on the material (`POST /study-materials/:id/retries`).
-- **Tutor** reads `TUTOR_TOP_K=4` passages, so answers take about 3–4 min when the model is idle. Answers are capped
-  at `TUTOR_MAX_TOKENS=400` and `TUTOR_TIMEOUT_MS=600000` (10 min). The web
-  proxy must allow longer: `API_PROXY_TIMEOUT_MS=660000` in `apps/web/.env.local`. A model that is down or
-  busy returns a readable 503.
-- `LLM_TIMEOUT_MS=900000` bounds each generation call, with `LLM_MAX_RETRIES=1`.
+- Saving a hosted choice first makes one tiny test call with the key, so a wrong key, model or empty account is
+  reported on the settings page, not mid-answer. **Load models from my account** lists the models the key can use.
+- Keys are encrypted with AES-256-GCM before storage, never returned by the API (only `…last4`), usable only for that
+  student's own requests, and deleted with **Delete my saved key**. Changes are audited without the key. Rotating
+  `LLM_CREDENTIALS_KEY` makes saved keys unreadable; students are asked to enter them again.
+- Provider endpoints are fixed in code ([`hosted-providers.ts`](apps/api/src/ai/providers/hosted-providers.ts)):
+  students cannot point the server at another address.
+- Claude models go through the official Anthropic SDK with effort `low` (short, factual answers) and, on Claude
+  Opus 5.5 / Sonnet 5.5, server-side refusal fallbacks. The others use their OpenAI-compatible APIs.
+- With a hosted model the tutor sends whole passages and more chat history, and uploads sample
+  `GENERATION_MAX_BATCHES_HOSTED=10` sections. A key that stops working gives a clear message in the tutor, and
+  generation stops with that reason instead of retrying.
 
-**Other servers.** Any OpenAI-compatible server works through `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_CHAT_MODEL`:
+**Tutor behaviour (both options).**
 
-- **Ollama:** `npm run llm:setup` builds `edu-chat` from
-  [`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile). Use `LLM_JSON_MODE=json_object`,
-  plus `EMBEDDING_PROVIDER=api` and `EMBEDDING_MODEL=nomic-embed-text` if you want Ollama to serve embeddings
-  too.
-- **Hosted providers:** set the three variables above and clear the two prefix variables.
-- **Separate embeddings endpoint:** set `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY`.
-- **Different embedding size:** if the dimension changes, add a migration altering `vector(768)` and re-ingest
-  materials.
+- The answer streams (`POST /tutor/queries/stream`, server-sent events): the UI names the model answering, shows
+  each step (searching, picking passages, the model reading them with a progress bar and time estimate) and then the
+  text as it is written. **Stop** cancels the model request.
+- On the local model only the sentences most relevant to the question are sent, up to
+  `TUTOR_CONTEXT_TOKENS=1200` (keyword pre-filter, then embedding similarity; ~3 s), with the last
+  `TUTOR_HISTORY_MESSAGES=4` chat messages. A tutor question goes before background generation, which cancels its
+  model call and repeats it afterwards (`TUTOR_PRIORITY=true`). Opening the tutor page warms the model up.
+- Limits: `TUTOR_MAX_TOKENS=400`, `TUTOR_TIMEOUT_MS=180000`; the web proxy must allow longer
+  (`API_PROXY_TIMEOUT_MS` in `apps/web/.env.local`).
+
+**Generation.** A student upload is only stored and indexed: the tutor can use it at once, and it gets a study
+roadmap (sections and reading times) without a model call. On the document's study page the student then asks for
+**flashcards** or **practice questions** separately, and picks the model for that run: **Local** (free) or
+**Hosted** (the provider and key saved under Settings → AI model). Once some exist, **More** adds new ones (aimed
+at the sections with the fewest so far, skipping repeats) and **Regenerate** writes a fresh set that replaces the
+old one when it is ready (questions already answered are kept). The first run also names the roadmap sections.
+**Stop** ends a queued or running run within a few seconds (the model call is cancelled); what it already made
+is kept and nothing is removed, so a stopped Regenerate leaves the earlier set in place.
+API: `POST /study-materials/:id/generations` with `{kind: FLASHCARDS|QUESTIONS, engine: LOCAL|HOSTED, mode: REPLACE|MORE}`;
+`POST /study-materials/:id/generations/:kind/stop`.
+Measured on the local model (2-section PDF): 6 flashcards in 45 s, 5 questions in about 2 min, 5 more flashcards in 18 s.
+
+Staff uploads still generate flashcards, questions and the roadmap automatically after processing, sampling
+`GENERATION_MAX_BATCHES=6` sections (questions go to the examiner review queue).
+Each section is saved as soon as it is written, so items appear progressively, with a live percentage. Interrupted
+work is resumed or re-queued by the worker (on start-up and every 2 min); real failures show **Retry** on the material
+(`POST /study-materials/:id/retries`). `LLM_TIMEOUT_MS=300000` bounds each local call.
+
+**Embeddings elsewhere.** `EMBEDDING_PROVIDER=api` with `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` uses an
+OpenAI-compatible `/embeddings` endpoint instead. If the dimension changes, add a migration altering `vector(768)`
+and re-ingest materials.
 
 ## Features by role
 
@@ -140,13 +166,16 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 | `GET /study-materials/:id/flashcards/export?format=pdf|csv` | authenticated + object policy |
 | `POST /study-materials/files`, `POST /study-materials/urls` | `materials:upload` (all roles) |
 | `PATCH /study-materials/:id/visibility` | `materials:publish` (Admin, Examiner) |
+| `POST /study-materials/:id/generations` (generate flashcards or questions with a chosen model; replace or add more) | owner or `materials:moderate` |
+| `POST /study-materials/:id/generations/:kind/stop` (stop that run; items already made are kept) | owner or `materials:moderate` |
 | `POST /study-materials/:id/retries` (re-run failed processing or generation) | owner or `materials:moderate` |
 | `DELETE /study-materials/:id` | owner or `materials:moderate` |
 | `GET /exam-questions`, `GET /exam-questions/resources`, `PATCH /exam-questions/:id` | `questions:curate` (Admin, Examiner) |
 | `GET/POST /exam-papers`, `GET/PATCH/DELETE /exam-papers/:id` | `exam-papers:manage` (Admin, Examiner) |
 | `GET /exam-papers/available`, `POST /exam-papers/:id/{enrollments,sessions}` | `exams:take` (Student) |
 | `GET /analytics/{frequently-missed-questions,concept-weaknesses,material-performance}` | `analytics:read` |
-| `POST /tutor/queries` | `tutor:use` (Student) |
+| `POST /tutor/queries`, `POST /tutor/queries/stream` (SSE), `POST /tutor/warmup` | `tutor:use` (Student) |
+| `GET/PUT /me/ai-settings`, `POST /me/ai-settings/models`, `DELETE /me/ai-settings/key` | `tutor:use` (Student, own settings) |
 | `POST /exam-sessions`, `POST /exam-sessions/:id/{answers,submissions}` | `exams:take` (Student, owner only) |
 | `GET /exam-sessions` (own history) | `exams:take` |
 | `GET /exam-sessions/:id`, `GET …/scorecard`, `GET …/certificate` (PDF) | owner or `exam-results:read-all` |
@@ -180,6 +209,9 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 - Tutor refuses without calling the LLM when no chunk passes the similarity threshold; prompt forbids outside knowledge.
 - Generated JSON is Zod-validated (e.g. `correctAnswer` must match an option); staff-material questions require examiner approval before use in exams.
 - Per-route rate limits on tutor & uploads (cost/abuse control).
+- Students' hosted-model API keys: AES-256-GCM at rest (`LLM_CREDENTIALS_KEY` kept out of the database), never
+  returned or logged, verified with a test call before saving, and only sent to a fixed list of provider endpoints (no
+  user-supplied URLs, so no SSRF).
 
 **Exam integrity**
 - Certificates are generated server-side only for exam-mode results above 70%; exam-program answer keys are never shown to candidates (the bank stays reusable). Attempt limits are enforced under a row lock on the enrollment.

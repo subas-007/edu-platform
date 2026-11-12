@@ -4,6 +4,8 @@ import { env } from '../config/env';
 
 /** Small batches keep peak memory low on CPU (each chunk is up to ~500 tokens). */
 const LOCAL_BATCH_SIZE = 8;
+/** ~500 tokens of English text. */
+const LOCAL_CHUNK_CHARS = 2_000;
 
 type FeatureExtractor = (
   texts: string[],
@@ -49,13 +51,32 @@ export class LocalEmbedder {
   async embed(inputs: string[]): Promise<number[][]> {
     const extractor = await this.load();
     const vectors: number[][] = [];
-    for (let i = 0; i < inputs.length; i += LOCAL_BATCH_SIZE) {
-      const output = await extractor(inputs.slice(i, i + LOCAL_BATCH_SIZE), {
-        pooling: 'mean',
-        normalize: true,
-      });
+    for (const batch of batchByLength(inputs)) {
+      const output = await extractor(batch, { pooling: 'mean', normalize: true });
       vectors.push(...output.tolist());
     }
     return vectors;
   }
+}
+
+/**
+ * Each model call has a fixed cost of ~0.5 s on CPU, so short texts (the tutor's sentence
+ * spans) go in large batches: one call for 40 spans takes ~3 s against ~20 s one at a time.
+ * The batch is bounded by total length so peak memory stays that of LOCAL_BATCH_SIZE full chunks.
+ */
+export function batchByLength(inputs: string[], maxChars = LOCAL_BATCH_SIZE * LOCAL_CHUNK_CHARS): string[][] {
+  const batches: string[][] = [];
+  let current: string[] = [];
+  let chars = 0;
+  for (const input of inputs) {
+    if (current.length > 0 && chars + input.length > maxChars) {
+      batches.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(input);
+    chars += input.length;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
 }

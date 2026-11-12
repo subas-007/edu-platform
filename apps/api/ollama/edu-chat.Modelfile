@@ -1,9 +1,13 @@
 # Local chat model for the Edu Platform (tutor answers, flashcard/question/roadmap JSON).
 # Build:  npm run llm:setup   (or: ollama create edu-chat -f ollama/edu-chat.Modelfile)
 #
-# Why a custom model instead of plain qwen2.5:7b: Ollama's OpenAI-compatible /v1 endpoint
-# cannot set the context window per request, and the default is too small for 6 retrieved
-# ~500-token chunks + system prompt + chat history. Sampling (temperature) stays per request.
-FROM qwen2.5:7b
+# qwen3:4b-instruct (Q4_K_M, 2.5 GB) answers directly, without hidden "thinking" tokens, and
+# fits in RAM on a CPU-only laptop. Measured on an i7-13620H: prompt reading ~85 tokens/s,
+# writing ~12-14 tokens/s, so a tutor answer takes ~20 s and a flashcard call ~40 s.
+#
+# Why a custom model instead of plain qwen3:4b-instruct: Ollama's OpenAI-compatible /v1 endpoint
+# cannot set the context window per request, and its 4096-token default is too small for a
+# 3-chunk generation prompt plus its JSON answer. Sampling (temperature) stays per request.
+FROM qwen3:4b-instruct
 PARAMETER num_ctx 8192
 PARAMETER num_predict 2048
