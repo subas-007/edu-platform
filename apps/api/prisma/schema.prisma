@@ -35,6 +35,8 @@ enum GenerationStatus {
   GENERATING
   COMPLETED
   FAILED
+  /// A requested run the student stopped (material_generations only).
+  CANCELLED
 }
 
 enum MaterialVisibility {
@@ -83,15 +85,42 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  refreshTokens   RefreshToken[]
-  materials       Material[]
-  examSessions    ExamSession[]
-  roadmapProgress RoadmapProgress[]
-  auditLogs       AuditLog[]
-  examPapers      ExamPaper[]       @relation("PaperCreator")
-  enrollments     ExamEnrollment[]
+  refreshTokens      RefreshToken[]
+  materials          Material[]
+  examSessions       ExamSession[]
+  roadmapProgress    RoadmapProgress[]
+  auditLogs          AuditLog[]
+  examPapers         ExamPaper[]          @relation("PaperCreator")
+  enrollments        ExamEnrollment[]
+  aiPreference       AiPreference?
+  generationRequests MaterialGeneration[]
+  brandingUpdates    Branding[]
 
   @@map("users")
+}
+
+enum AiMode {
+  LOCAL
+  HOSTED
+}
+
+/// Which model answers a user's AI requests: the server's free local model, or a hosted
+/// provider paid with the user's own API key (stored encrypted, see CredentialCipher).
+model AiPreference {
+  userId           String   @id @map("user_id") @db.Uuid
+  mode             AiMode   @default(LOCAL)
+  /// Id from HOSTED_PROVIDERS (fixed list of endpoints); null while unset.
+  provider         String?
+  model            String?
+  /// AES-256-GCM ciphertext; never returned by the API.
+  apiKeyCiphertext String?  @map("api_key_ciphertext")
+  /// Last characters of the key, for display only.
+  apiKeyHint       String?  @map("api_key_hint")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ai_preferences")
 }
 
 model RefreshToken {
@@ -112,42 +141,84 @@ model RefreshToken {
 }
 
 model Material {
-  id              String             @id @default(uuid()) @db.Uuid
-  title           String
+  id                 String             @id @default(uuid()) @db.Uuid
+  title              String
   /// Opaque storage key for uploads, or the source URL for URL materials.
-  fileUrl         String             @map("file_url")
-  fileType        MaterialFileType   @map("file_type")
-  status          MaterialStatus     @default(QUEUED)
-  visibility      MaterialVisibility @default(PRIVATE)
-  failureReason   String?            @map("failure_reason")
+  fileUrl            String             @map("file_url")
+  fileType           MaterialFileType   @map("file_type")
+  status             MaterialStatus     @default(QUEUED)
+  visibility         MaterialVisibility @default(PRIVATE)
+  failureReason      String?            @map("failure_reason")
+  /// While PROCESSING, the long step under way (OCR of scanned PDF pages) and how far it is (0..100).
+  processingNote     String?            @map("processing_note")
+  processingProgress Int?               @map("processing_progress")
   /// 0..1 heuristic used by the roadmap generator.
-  complexityScore Float?             @map("complexity_score")
+  complexityScore    Float?             @map("complexity_score")
   /// SHA-256 of the normalised extracted text; identical content reuses existing AI assets.
-  contentHash     String?            @map("content_hash")
+  contentHash        String?            @map("content_hash")
   /// Set when chunks/flashcards/questions/roadmap were copied from another material (no LLM calls).
-  reusedFromId    String?            @map("reused_from_id") @db.Uuid
+  reusedFromId       String?            @map("reused_from_id") @db.Uuid
   /// Flashcard/question/roadmap generation, which runs after the material is READY (chunks embedded).
-  generationStatus   GenerationStatus @default(PENDING) @map("generation_status")
+  generationStatus   GenerationStatus   @default(PENDING) @map("generation_status")
   /// 0..100 while GENERATING.
-  generationProgress Int              @default(0) @map("generation_progress")
-  generationError    String?          @map("generation_error")
-  uploadedById    String             @map("uploaded_by") @db.Uuid
-  createdAt       DateTime           @default(now()) @map("created_at")
-  updatedAt       DateTime           @updatedAt @map("updated_at")
+  generationProgress Int                @default(0) @map("generation_progress")
+  generationError    String?            @map("generation_error")
+  uploadedById       String             @map("uploaded_by") @db.Uuid
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
 
-  uploadedBy    User            @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+  uploadedBy    User                 @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
   chunks        DocumentChunk[]
   flashcards    Flashcard[]
   examQuestions ExamQuestion[]
   examSessions  ExamSession[]
   roadmap       StudyRoadmap?
-  reusedFrom    Material?       @relation("MaterialReuse", fields: [reusedFromId], references: [id], onDelete: SetNull)
-  reusedBy      Material[]      @relation("MaterialReuse")
+  generations   MaterialGeneration[]
+  reusedFrom    Material?            @relation("MaterialReuse", fields: [reusedFromId], references: [id], onDelete: SetNull)
+  reusedBy      Material[]           @relation("MaterialReuse")
 
   @@index([uploadedById])
   @@index([contentHash])
   @@index([visibility, status])
   @@map("materials")
+}
+
+enum AssetKind {
+  FLASHCARDS
+  QUESTIONS
+}
+
+enum GenerationRequestMode {
+  REPLACE // regenerate: new set replaces the old one once it exists
+  MORE // add items, avoiding ones already there
+}
+
+/// A student-requested flashcard or question run (latest one per kind). Student uploads are
+/// only stored and indexed; flashcards and questions are generated when the student asks,
+/// with the model they pick for that run.
+model MaterialGeneration {
+  materialId    String                @map("material_id") @db.Uuid
+  kind          AssetKind
+  /// PENDING = queued, GENERATING = running, then COMPLETED, FAILED or CANCELLED (stopped by the student).
+  status        GenerationStatus      @default(PENDING)
+  progress      Int                   @default(0)
+  error         String?
+  engine        AiMode
+  /// What ran it, for display ("Qwen3 4B (local)", "Anthropic (Claude) · claude-haiku-5-5").
+  engineLabel   String                @map("engine_label")
+  mode          GenerationRequestMode
+  requestedById String                @map("requested_by") @db.Uuid
+  /// New items saved by the finished run.
+  added         Int?
+  createdAt     DateTime              @default(now()) @map("created_at")
+  updatedAt     DateTime              @updatedAt @map("updated_at")
+
+  material    Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  requestedBy User     @relation(fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@id([materialId, kind])
+  @@index([status])
+  @@map("material_generations")
 }
 
 model DocumentChunk {
@@ -327,4 +398,33 @@ model AuditLog {
   @@index([createdAt])
   @@index([actorId])
   @@map("audit_logs")
+}
+
+/// Background presets for the site theme (see src/branding/palette.ts).
+enum SurfaceTheme {
+  MIDNIGHT
+  GRAPHITE
+  PLUM
+  PINE
+  ESPRESSO
+}
+
+/// The site's name, logo and colours, set by an administrator. A single row (id 1); when it is
+/// missing the defaults apply.
+model Branding {
+  id            Int          @id @default(1)
+  appName       String       @map("app_name")
+  /// #rrggbb; the shade scales are computed from it.
+  accentColor   String       @map("accent_color")
+  surface       SurfaceTheme @default(MIDNIGHT)
+  /// PNG or JPEG (checked by magic bytes), at most 512 KB.
+  logo          Bytes?
+  logoMimeType  String?      @map("logo_mime_type")
+  logoUpdatedAt DateTime?    @map("logo_updated_at")
+  updatedById   String?      @map("updated_by") @db.Uuid
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("branding")
 }

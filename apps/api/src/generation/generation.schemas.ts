@@ -41,6 +41,9 @@ export const generatedQuestionsSchema = z.object({
     .max(8),
 });
 
+export type GeneratedFlashcards = z.infer<typeof generatedFlashcardsSchema>;
+export type GeneratedQuestions = z.infer<typeof generatedQuestionsSchema>;
+
 export const generatedRoadmapSchema = z.object({
   milestones: z.array(
     z.object({

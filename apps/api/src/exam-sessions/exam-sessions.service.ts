@@ -24,6 +24,7 @@ import {
 } from '../documents/pdf-documents';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaterialAccessPolicy } from '../study-materials/material-access.policy';
+import { BrandingService } from '../branding/branding.service';
 import {
   ConceptDiagnostic,
   ListMySessionsQuery,
@@ -62,6 +63,7 @@ export class ExamSessionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accessPolicy: MaterialAccessPolicy,
+    private readonly branding: BrandingService,
   ) {}
 
   async startExamSession(user: AuthenticatedUser, input: StartExamSessionInput) {
@@ -341,7 +343,7 @@ export class ExamSessionsService {
           outcome: !a ? 'Unanswered' : a.isCorrect ? 'Correct' : 'Incorrect',
         };
       }),
-    });
+    }, await this.branding.pdfBrand());
     return { buffer, filename: `${toFilenameStem(context.title)}-scorecard.pdf` };
   }
 
@@ -368,7 +370,7 @@ export class ExamSessionsService {
       correctCount: session.correctCount ?? 0,
       totalQuestions: session.questionIds.length,
       completedAt: session.completedAt ?? session.startedAt,
-    });
+    }, await this.branding.pdfBrand());
     return { buffer, filename: `${toFilenameStem(context.title)}-certificate.pdf` };
   }
 

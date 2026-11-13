@@ -12,6 +12,7 @@
   --color-ink-600: #263b63;
   --color-ink-500: #3a527f;
 
+  --color-aqua-100: #dafcf8;
   --color-aqua-200: #b4f7f0;
   --color-aqua-300: #78efe3;
   --color-aqua-400: #3ee2d2;
@@ -27,20 +28,27 @@
   color-scheme: dark;
 }
 
+/* Native checkboxes, radios, ranges and progress bars follow the brand colour
+   (the palette keeps it readable against the dark backgrounds). */
+body {
+  accent-color: var(--color-aqua-400);
+}
+
 html {
   -webkit-text-size-adjust: 100%;
 }
 
 body {
   @apply min-h-screen bg-ink-950 text-slate-200 antialiased;
+  /* Follow the theme variables, so an administrator's colours apply here too. */
   background-image:
-    radial-gradient(1200px 600px at 100% -10%, rgb(62 226 210 / 0.07), transparent 60%),
-    radial-gradient(900px 500px at -10% 110%, rgb(58 82 127 / 0.25), transparent 60%);
+    radial-gradient(1200px 600px at 100% -10%, color-mix(in oklab, var(--color-aqua-400) 7%, transparent), transparent 60%),
+    radial-gradient(900px 500px at -10% 110%, color-mix(in oklab, var(--color-ink-500) 25%, transparent), transparent 60%);
   background-attachment: fixed;
 }
 
 ::selection {
-  background: rgb(62 226 210 / 0.3);
+  background: color-mix(in oklab, var(--color-aqua-400) 30%, transparent);
   color: #fff;
 }
 

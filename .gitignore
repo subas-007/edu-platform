@@ -7,3 +7,7 @@ storage/
 keys/
 *.log
 *.tsbuildinfo
+.cache/
+
+# OCR language data downloaded by tesseract.js at runtime
+*.traineddata

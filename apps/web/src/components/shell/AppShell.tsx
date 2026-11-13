@@ -1,10 +1,12 @@
 'use client';
 
-import { GraduationCap, Menu, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react';
+import { Menu, PanelLeftClose, PanelLeftOpen, X } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
 import type { UserRole } from '@/lib/roles';
+import { useBranding } from '../BrandingProvider';
+import { BrandMark } from './BrandMark';
 import { GlobalSearch } from './GlobalSearch';
 import { NAV_ICONS, type NavSection } from './nav-icons';
 import { NotificationsMenu } from './NotificationsMenu';
@@ -32,6 +34,7 @@ export function AppShell({
   children: ReactNode;
 }) {
   const pathname = usePathname();
+  const { appName } = useBranding();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const home = sections[0]?.items[0]?.href ?? '/';
@@ -55,13 +58,11 @@ export function AppShell({
   const sidebar = (compact: boolean) => (
     <div className="flex h-full flex-col">
       <div className={`flex h-16 items-center gap-3 border-b border-ink-700/60 ${compact ? 'justify-center px-2' : 'px-5'}`}>
-        <Link href={home} className="flex items-center gap-3" aria-label="Edu Platform home">
-          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-aqua-400 to-aqua-600 text-ink-950 shadow-lg shadow-aqua-500/30">
-            <GraduationCap className="h-5 w-5" aria-hidden />
-          </span>
+        <Link href={home} className="flex min-w-0 items-center gap-3" aria-label={`${appName} home`}>
+          <BrandMark />
           {!compact && (
-            <span className="leading-tight">
-              <span className="block text-sm font-semibold text-white">Edu Platform</span>
+            <span className="min-w-0 leading-tight">
+              <span className="block truncate text-sm font-semibold text-white">{appName}</span>
               <span className="block text-[11px] text-slate-400">{workspaceLabel}</span>
             </span>
           )}

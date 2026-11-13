@@ -60,6 +60,7 @@ export function FlashcardStudio() {
               <GenerationNotice
                 material={current}
                 what="flashcards"
+                kind="FLASHCARDS"
                 canRetry={canRetry(current)}
                 hasContent={current._count.flashcards > 0}
               />

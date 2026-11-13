@@ -10,7 +10,7 @@ export default function StudentMaterialsPage() {
         title="My materials"
         subtitle="Course materials published by your examiners appear alongside your own private uploads. Open a ready material for flashcards, a study roadmap and practice."
       />
-      <UploadMaterialForm />
+      <UploadMaterialForm onDemand />
       <MaterialLibraryView studyLinkBase="/student/materials" canDelete="own" />
     </>
   );

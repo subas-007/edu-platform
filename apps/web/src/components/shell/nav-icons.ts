@@ -4,12 +4,14 @@ import {
   BookOpen,
   Bot,
   ClipboardCheck,
+  Cpu,
   Database,
   FileStack,
   FolderOpen,
   GraduationCap,
   Layers,
   LayoutDashboard,
+  Palette,
   ScrollText,
   ShieldCheck,
   Users,
@@ -24,6 +26,7 @@ export const NAV_ICONS = {
   practice: ClipboardCheck,
   programs: GraduationCap,
   tutor: Bot,
+  ai: Cpu,
   results: Award,
   analytics: BarChart3,
   bank: Database,
@@ -32,6 +35,7 @@ export const NAV_ICONS = {
   users: Users,
   moderation: ShieldCheck,
   audit: ScrollText,
+  branding: Palette,
 } satisfies Record<string, LucideIcon>;
 
 export type NavIconName = keyof typeof NAV_ICONS;

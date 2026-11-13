@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from './api-client';
 import { useSessionUser } from './use-session';
-import type { Paginated, StudyMaterial } from './types';
+import type { AssetKind, MaterialGeneration, Paginated, StudyMaterial } from './types';
 
 /** Where a material is in the upload → process → generate pipeline. */
 export type PipelineStage = 'queued' | 'processing' | 'generating' | 'complete' | 'failed' | 'generation-failed';
@@ -17,10 +17,32 @@ export function pipelineStage(m: Pick<StudyMaterial, 'status' | 'generationStatu
   return 'generating';
 }
 
-/** Still changing on the server, so views showing it should poll. */
-export function isPipelineBusy(m: Pick<StudyMaterial, 'status' | 'generationStatus'>) {
+export function isGenerationActive(run: Pick<MaterialGeneration, 'status'>) {
+  return run.status === 'PENDING' || run.status === 'GENERATING';
+}
+
+/**
+ * Stopped, but the worker is still cancelling its model call and counting what it kept
+ * (a few seconds). A new run of this kind is refused until then.
+ */
+export function isRunStopping(run: Pick<MaterialGeneration, 'status' | 'added' | 'updatedAt'>) {
+  return run.status === 'CANCELLED' && run.added == null && Date.now() - Date.parse(run.updatedAt) < 60_000;
+}
+
+/** The flashcard or question run the student asked for, while it is queued or running. */
+export function activeRun(m: Pick<StudyMaterial, 'generations'>, kind: AssetKind) {
+  return m.generations?.find((g) => g.kind === kind && isGenerationActive(g));
+}
+
+/** Still changing on the server (processing, or flashcards/questions being written), so views should poll. */
+export function isPipelineBusy(m: Pick<StudyMaterial, 'status' | 'generationStatus' | 'generations'>) {
   const stage = pipelineStage(m);
-  return stage === 'queued' || stage === 'processing' || stage === 'generating';
+  return (
+    stage === 'queued' ||
+    stage === 'processing' ||
+    stage === 'generating' ||
+    Boolean(m.generations?.some((g) => isGenerationActive(g) || isRunStopping(g)))
+  );
 }
 
 /** Generation runs on a local model and can take many minutes; poll gently while it does. */
@@ -51,6 +73,20 @@ export function useRetryMaterial() {
     onSuccess: (material) => {
       void queryClient.invalidateQueries({ queryKey: ['study-materials'] });
       void queryClient.invalidateQueries({ queryKey: ['study-material', material.id] });
+    },
+  });
+}
+
+/** Stops a queued or running flashcard / question run. Items it already made are kept. */
+export function useStopGeneration(materialId: string, kind: AssetKind) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      apiRequest<StudyMaterial>(`/study-materials/${materialId}/generations/${kind}/stop`, { method: 'POST' }),
+    onSuccess: (material) => {
+      queryClient.setQueryData(['study-material', materialId], material);
+      void queryClient.invalidateQueries({ queryKey: ['study-materials'] });
+      void queryClient.invalidateQueries({ queryKey: ['study-material', materialId] });
     },
   });
 }

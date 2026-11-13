@@ -1,4 +1,4 @@
-import { MaterialStatus, MaterialVisibility } from '@prisma/client';
+import { AiMode, AssetKind, GenerationRequestMode, MaterialStatus, MaterialVisibility } from '@prisma/client';
 import { z } from 'zod';
 import { sanitizedText } from '../common/validation';
 
@@ -35,6 +35,18 @@ export const exportFlashcardsQuerySchema = z
   .object({ format: z.enum(['csv', 'pdf']).default('pdf') })
   .strict();
 export type ExportFlashcardsQuery = z.infer<typeof exportFlashcardsQuerySchema>;
+
+/** Flashcards or questions for one material, with the model chosen for this run. */
+export const requestGenerationSchema = z
+  .object({
+    kind: z.nativeEnum(AssetKind),
+    engine: z.nativeEnum(AiMode),
+    mode: z.nativeEnum(GenerationRequestMode).default(GenerationRequestMode.REPLACE),
+  })
+  .strict();
+export type RequestGenerationInput = z.infer<typeof requestGenerationSchema>;
+
+export const assetKindParamSchema = z.nativeEnum(AssetKind);
 
 export const listMaterialsQuerySchema = z
   .object({

@@ -1,7 +1,7 @@
 # Edu Platform
 
 Secure, AI-assisted study platform with three isolated roles (Admin, Examiner, Student), a multimodal
-ingestion pipeline (PDF, DOCX, PNG/JPEG via OCR, web URLs), RAG tutoring on pgvector, AI-generated
+ingestion pipeline (PDF, DOCX, PNG/JPEG via OCR, scanned PDF pages via OCR, web URLs), RAG tutoring on pgvector, AI-generated
 flashcards / questions / roadmaps, and a dual-mode (Learning / Exam) assessment engine.
 
 ```
@@ -18,12 +18,12 @@ Browser ──HTTPS──► Next.js (apps/web)  ── /api/v1/* proxied ──
 
 ```bash
 docker compose up -d                       # Postgres+pgvector & Redis on loopback
-                                           # (port clash? POSTGRES_HOST_PORT=55432 docker compose up -d)
+                                           # (port clash? put POSTGRES_HOST_PORT=55432 in ./.env)
 cd apps/api
 cp .env.example .env
 npm install
 npm run keys:generate                      # paste private+public into apps/api/.env, public into apps/web/.env.local
-npm run llm:setup                          # local LLM via Ollama (see below); set SEED_ADMIN_PASSWORD in .env
+npm run llm:setup                          # local model in Ollama (see "AI models" below); set SEED_ADMIN_PASSWORD in .env
 npm run db:deploy                          # applies migrations, incl. the HNSW vector index
 npm run db:seed                            # first admin — then delete SEED_ADMIN_PASSWORD from .env
 npm run dev:api                            # :4000
@@ -34,33 +34,89 @@ cp .env.example .env.local                 # JWT_PUBLIC_KEY_B64 + API_INTERNAL_U
 npm install && npm run dev                 # http://localhost:3005
 ```
 
-### Local LLM (default)
+### AI models: local (free) or hosted (student's own key)
 
-All model calls go through Ollama's OpenAI-compatible endpoint (`http://localhost:11434/v1`), so no
-material text leaves the machine. Install [Ollama](https://ollama.com), then `npm run llm:setup` (from
-`apps/api`) pulls the models and builds the chat model:
+Each student chooses under **Settings → AI model** who answers their tutor questions and writes flashcards and
+questions from the documents they upload:
 
-| Role | Model | Notes |
+| Option | Cost | Speed (measured, i7-13620H CPU) | Privacy |
+|---|---|---|---|
+| **Local model** (default): Qwen3 4B in [Ollama](https://ollama.com) on this server | free | tutor answer ~20–35 s; one flashcard call ~40 s | documents never leave the server |
+| **Hosted model**: the student's own API key for Anthropic, OpenAI, Google Gemini, Groq or OpenRouter | billed to the student's account | seconds | the passages answering each question go to that provider (the page says so) |
+
+Staff uploads always use the local model. Document search (embeddings) always runs in-process with
+`nomic-ai/nomic-embed-text-v1.5` (768 dims, ~520 MB downloaded once into `apps/api/.cache/models`), so it is the same
+whichever model answers.
+
+**Local model setup.** Install Ollama (`winget install Ollama.Ollama` on Windows), then `npm run llm:setup` in
+`apps/api`. It pulls `qwen3:4b-instruct` (2.5 GB) and builds `edu-chat` from
+[`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile) with an 8k context (Ollama's 4k default is
+too small for a generation prompt plus its JSON answer). In `apps/api/.env`: `LLM_BASE_URL=http://127.0.0.1:11434/v1`,
+`LLM_API_KEY=ollama`, `LLM_CHAT_MODEL=edu-chat`, `LLM_JSON_MODE=json_object`. `npm run llm:bench` times one real
+flashcard call.
+
+Why this model: the earlier default, Qwen3.6-35B on colibri, needs ~22 GB and did not fit in this laptop's free RAM,
+so it re-read weights from disk on every question (prompt reading 4–12 tokens/s; a tutor answer took 2–9 minutes).
+Qwen3 4B fits in RAM: prompt reading ~85 tokens/s, writing ~12–14 tokens/s. Same tutor question, same passages:
+
+| Model | First words | Full answer |
 |---|---|---|
-| Chat (tutor, flashcards, questions, roadmap) | `edu-chat` | `qwen2.5:7b` with an 8k context window — defined in [`apps/api/ollama/edu-chat.Modelfile`](apps/api/ollama/edu-chat.Modelfile) |
-| Embeddings | `nomic-embed-text` | 768 dims; uses `search_document:` / `search_query:` prefixes |
+| Qwen3.6-35B on colibri (warm) | 82 s | 110 s |
+| **Qwen3 4B on Ollama** | **10 s** | **22 s** |
 
-Runs on CPU (~5 GB RAM), so expect minutes, not seconds:
+`qwen3.5:4b` was also tried and dropped: it "thinks" before answering and spent the whole answer budget on hidden
+reasoning. colibri still works (`npm run llm:start`, `LLM_BASE_URL=http://127.0.0.1:8000/v1`, `LLM_JSON_MODE=prompt`).
 
-- **Generation** (flashcards, questions, roadmap) runs after a document is processed and samples
-  `GENERATION_MAX_BATCHES` sections (2 model calls each, ~1 min per call on CPU; default 5 here, use 10 with a GPU).
-  Each section is saved as soon as it is written, so cards and questions appear progressively, with a live
-  percentage in the UI. A worker restart mid-run resumes from the last saved section. The worker also re-queues
-  interrupted work by itself (on start-up and every 2 min). Real failures show **Retry** on the material
-  (`POST /study-materials/:id/retries`).
-- **Tutor** answers take ~10 s when the model is idle and a minute or two while it is also generating. The API
-  allows `TUTOR_TIMEOUT_MS=240000`, and the web proxy allows 300 s (`experimental.proxyTimeout` in
-  `next.config.ts`). A model that is down or busy returns a readable 503.
-- `LLM_TIMEOUT_MS=300000` bounds each generation call.
+**Hosted models.** Set `LLM_CREDENTIALS_KEY` (32 random bytes, base64:
+`node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`); without it only the local model is
+offered. Then:
 
-To switch to a
-hosted provider instead, set `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_CHAT_MODEL`, clear the two prefix variables and,
-if the embedding size changes, add a migration altering `vector(768)` and re-ingest materials.
+- Saving a hosted choice first makes one tiny test call with the key, so a wrong key, model or empty account is
+  reported on the settings page, not mid-answer. **Load models from my account** lists the models the key can use.
+- Keys are encrypted with AES-256-GCM before storage, never returned by the API (only `…last4`), usable only for that
+  student's own requests, and deleted with **Delete my saved key**. Changes are audited without the key. Rotating
+  `LLM_CREDENTIALS_KEY` makes saved keys unreadable; students are asked to enter them again.
+- Provider endpoints are fixed in code ([`hosted-providers.ts`](apps/api/src/ai/providers/hosted-providers.ts)):
+  students cannot point the server at another address.
+- Claude models go through the official Anthropic SDK with effort `low` (short, factual answers) and, on Claude
+  Opus 5.5 / Sonnet 5.5, server-side refusal fallbacks. The others use their OpenAI-compatible APIs.
+- With a hosted model the tutor sends whole passages and more chat history, and uploads sample
+  `GENERATION_MAX_BATCHES_HOSTED=10` sections. A key that stops working gives a clear message in the tutor, and
+  generation stops with that reason instead of retrying.
+
+**Tutor behaviour (both options).**
+
+- The answer streams (`POST /tutor/queries/stream`, server-sent events): the UI names the model answering, shows
+  each step (searching, picking passages, the model reading them with a progress bar and time estimate) and then the
+  text as it is written. **Stop** cancels the model request.
+- On the local model only the sentences most relevant to the question are sent, up to
+  `TUTOR_CONTEXT_TOKENS=1200` (keyword pre-filter, then embedding similarity; ~3 s), with the last
+  `TUTOR_HISTORY_MESSAGES=4` chat messages. A tutor question goes before background generation, which cancels its
+  model call and repeats it afterwards (`TUTOR_PRIORITY=true`). Opening the tutor page warms the model up.
+- Limits: `TUTOR_MAX_TOKENS=400`, `TUTOR_TIMEOUT_MS=180000`; the web proxy must allow longer
+  (`API_PROXY_TIMEOUT_MS` in `apps/web/.env.local`).
+
+**Generation.** A student upload is only stored and indexed: the tutor can use it at once, and it gets a study
+roadmap (sections and reading times) without a model call. On the document's study page the student then asks for
+**flashcards** or **practice questions** separately, and picks the model for that run: **Local** (free) or
+**Hosted** (the provider and key saved under Settings → AI model). Once some exist, **More** adds new ones (aimed
+at the sections with the fewest so far, skipping repeats) and **Regenerate** writes a fresh set that replaces the
+old one when it is ready (questions already answered are kept). The first run also names the roadmap sections.
+**Stop** ends a queued or running run within a few seconds (the model call is cancelled); what it already made
+is kept and nothing is removed, so a stopped Regenerate leaves the earlier set in place.
+API: `POST /study-materials/:id/generations` with `{kind: FLASHCARDS|QUESTIONS, engine: LOCAL|HOSTED, mode: REPLACE|MORE}`;
+`POST /study-materials/:id/generations/:kind/stop`.
+Measured on the local model (2-section PDF): 6 flashcards in 45 s, 5 questions in about 2 min, 5 more flashcards in 18 s.
+
+Staff uploads still generate flashcards, questions and the roadmap automatically after processing, sampling
+`GENERATION_MAX_BATCHES=6` sections (questions go to the examiner review queue).
+Each section is saved as soon as it is written, so items appear progressively, with a live percentage. Interrupted
+work is resumed or re-queued by the worker (on start-up and every 2 min); real failures show **Retry** on the material
+(`POST /study-materials/:id/retries`). `LLM_TIMEOUT_MS=300000` bounds each local call.
+
+**Embeddings elsewhere.** `EMBEDDING_PROVIDER=api` with `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` uses an
+OpenAI-compatible `/embeddings` endpoint instead. If the dimension changes, add a migration altering `vector(768)`
+and re-ingest materials.
 
 ## Features by role
 
@@ -76,8 +132,15 @@ concepts (no extra AI calls), review it, then publish; students enroll and sit i
 candidate's results. Re-uploading an already-analysed document **reuses its chunks, embeddings, flashcards,
 questions and roadmap** (matched by a content hash) instead of calling the LLM again.
 
-**Shell**: dark slate-blue theme with aqua accents; collapsible sidebar (drawer on mobile); top bar with search
-(`/` or Ctrl+K), notifications and a profile menu.
+**Administrator: Branding** (Admin → Branding): the **application name**, a **logo** (PNG or JPEG, up to 512 KB)
+and the **colour theme**: an accent colour (presets or any colour) and a background tone (Midnight blue, Graphite,
+Plum, Pine, Espresso), previewed before saving. They apply to every page, the sign-in page, the browser tab, and the
+certificate, score card and flashcard PDFs. The API turns the accent into a shade scale with fixed contrast rules:
+the colour is used exactly when text on it and next to it stays readable (WCAG AA, 4.5:1), and is lightened just
+enough when it would not. The theme reaches the page in the server render, so there is no flash of the old colours.
+
+**Shell**: dark theme (by default slate-blue with aqua accents, see Branding); collapsible sidebar (drawer on
+mobile); top bar with search (`/` or Ctrl+K), notifications and a profile menu.
 
 ## Layout
 
@@ -106,17 +169,22 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 | `GET /auth/me` | authenticated |
 | `GET/POST /users`, `PATCH /users/:id` | `users:manage` (Admin) |
 | `GET /audit-logs` | `audit-logs:read` (Admin) |
+| `GET /branding`, `GET /branding/logo?v=` (name, logo, computed colour palette) | public (cached, not rate-limited) |
+| `GET /branding/options`, `GET /branding/palette?accent=&surface=` (preview), `PUT /branding`, `PUT/DELETE /branding/logo` | `branding:manage` (Admin) |
 | `GET /study-materials[/:id[/flashcards]]` (`?search=`) | authenticated + object policy |
 | `GET /study-materials/:id/flashcards/export?format=pdf|csv` | authenticated + object policy |
 | `POST /study-materials/files`, `POST /study-materials/urls` | `materials:upload` (all roles) |
 | `PATCH /study-materials/:id/visibility` | `materials:publish` (Admin, Examiner) |
+| `POST /study-materials/:id/generations` (generate flashcards or questions with a chosen model; replace or add more) | owner or `materials:moderate` |
+| `POST /study-materials/:id/generations/:kind/stop` (stop that run; items already made are kept) | owner or `materials:moderate` |
 | `POST /study-materials/:id/retries` (re-run failed processing or generation) | owner or `materials:moderate` |
 | `DELETE /study-materials/:id` | owner or `materials:moderate` |
 | `GET /exam-questions`, `GET /exam-questions/resources`, `PATCH /exam-questions/:id` | `questions:curate` (Admin, Examiner) |
 | `GET/POST /exam-papers`, `GET/PATCH/DELETE /exam-papers/:id` | `exam-papers:manage` (Admin, Examiner) |
 | `GET /exam-papers/available`, `POST /exam-papers/:id/{enrollments,sessions}` | `exams:take` (Student) |
 | `GET /analytics/{frequently-missed-questions,concept-weaknesses,material-performance}` | `analytics:read` |
-| `POST /tutor/queries` | `tutor:use` (Student) |
+| `POST /tutor/queries`, `POST /tutor/queries/stream` (SSE), `POST /tutor/warmup` | `tutor:use` (Student) |
+| `GET/PUT /me/ai-settings`, `POST /me/ai-settings/models`, `DELETE /me/ai-settings/key` | `tutor:use` (Student, own settings) |
 | `POST /exam-sessions`, `POST /exam-sessions/:id/{answers,submissions}` | `exams:take` (Student, owner only) |
 | `GET /exam-sessions` (own history) | `exams:take` |
 | `GET /exam-sessions/:id`, `GET …/scorecard`, `GET …/certificate` (PDF) | owner or `exam-results:read-all` |
@@ -141,7 +209,8 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 
 **Input handling**
 - Zod `.strict()` schemas on every body/query (rejects mass-assignment like `{ "role": "ADMIN" }`); control-char stripping.
-- Uploads: 20 MB cap, memory-only multer, **magic-byte** detection (client MIME/filename ignored), PNG dimension cap, server-generated storage keys, path-traversal guard, files outside web root with `0600`.
+- Uploads: 150 MB cap (`MAX_UPLOAD_BYTES` in the API; the web proxy passes bodies up to 160 MB, `UPLOAD_PROXY_MAX_BYTES`, so the API is the one that answers 413), memory-only multer, **magic-byte** detection (client MIME/filename ignored), PNG dimension cap, server-generated storage keys, path-traversal guard, files outside web root with `0600`.
+- Scanned PDFs: pages with no text layer (fewer than 25 letters/digits) are rendered at 2000 px wide and read with Tesseract OCR by up to 4 workers (a quarter of the CPU threads); the material shows "Recognising text in scanned pages: n of N" while it runs (roughly 8–11 s per page per worker; a 200-page book takes about 8–10 minutes on 16 threads). Up to 500 pages are read.
 - URL ingestion: http(s) only, standard ports, no credentials; DNS-pinned connection lookup blocks private/loopback/link-local/metadata/IPv4-mapped/6to4 ranges (defeats DNS rebinding); every redirect re-validated; 5 MB/time limits; content-type allow-list; JSDOM without script execution.
 - All SQL is parameterised (Prisma or tagged-template `$queryRaw`).
 
@@ -150,6 +219,9 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 - Tutor refuses without calling the LLM when no chunk passes the similarity threshold; prompt forbids outside knowledge.
 - Generated JSON is Zod-validated (e.g. `correctAnswer` must match an option); staff-material questions require examiner approval before use in exams.
 - Per-route rate limits on tutor & uploads (cost/abuse control).
+- Students' hosted-model API keys: AES-256-GCM at rest (`LLM_CREDENTIALS_KEY` kept out of the database), never
+  returned or logged, verified with a test call before saving, and only sent to a fixed list of provider endpoints (no
+  user-supplied URLs, so no SSRF).
 
 **Exam integrity**
 - Certificates are generated server-side only for exam-mode results above 70%; exam-program answer keys are never shown to candidates (the bank stays reusable). Attempt limits are enforced under a row lock on the enrollment.

@@ -1,24 +1,29 @@
 'use client';
 
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Bot, FileText, Loader2, MessageSquarePlus, SendHorizontal, Sparkles, User } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Bot, Cloud, Cpu, FileText, MessageSquarePlus, SendHorizontal, Sparkles, Square, User } from 'lucide-react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { apiRequest, ApiError } from '@/lib/api-client';
-import type { Flashcard, TutorAnswer } from '@/lib/types';
-import { isPipelineBusy, useReadyMaterials } from '@/lib/use-materials';
+import { apiRequest, apiStream, ApiError } from '@/lib/api-client';
+import type { Flashcard, TutorAnswer, TutorStreamEvent } from '@/lib/types';
+import { useReadyMaterials } from '@/lib/use-materials';
 import { EmptyState, PageHeader, Spinner } from '../ui';
+import { describeEngine, useAiSettings } from './AiSettingsView';
 import { MaterialPicker } from './MaterialPicker';
+import { TutorProgress, type TutorProgressState } from './TutorProgress';
 
 interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
   citations?: TutorAnswer['citations'];
   grounded?: boolean;
+  /** How long the answer took, shown under it. */
+  seconds?: number;
+  stopped?: boolean;
 }
 
 const MAX_SELECTED = 20;
-const SLOW_ANSWER_MS = 15_000;
 
 function tutorErrorMessage(err: unknown): string {
   if (!(err instanceof ApiError)) return 'Could not reach the server. Check your connection and try again.';
@@ -30,6 +35,11 @@ function tutorErrorMessage(err: unknown): string {
   return err.message || 'Sorry, the tutor could not answer that.';
 }
 
+function formatDuration(seconds: number) {
+  const s = Math.round(seconds);
+  return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
 /**
  * The tutor answers ONLY from the documents the student selects: the selection is sent
  * as materialIds and the API restricts vector retrieval to those (already authorised) ids.
@@ -37,6 +47,7 @@ function tutorErrorMessage(err: unknown): string {
 export function TutorChatPanel() {
   const params = useSearchParams();
   const { ready, isLoading } = useReadyMaterials();
+  const aiSettings = useAiSettings();
   const [selected, setSelected] = useState<string[]>(() => {
     const raw = params.get('materialIds') ?? params.get('materialId');
     return raw ? raw.split(',').filter(Boolean).slice(0, MAX_SELECTED) : [];
@@ -51,13 +62,35 @@ export function TutorChatPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoading, ready.length]);
 
+  // The answer in progress: what the tutor is doing, then the text as it is written.
+  const [progress, setProgress] = useState<TutorProgressState | null>(null);
+  const [streamText, setStreamText] = useState<string | null>(null);
+  const answerRef = useRef<{ controller: AbortController; discard: boolean } | null>(null);
+  const busy = progress !== null || streamText !== null;
+
+  /** Stops the answer in progress (the API cancels the model request); `discard` drops partial text. */
+  function stop(discard = false) {
+    if (!answerRef.current) return;
+    answerRef.current.discard = discard;
+    answerRef.current.controller.abort();
+  }
+  useEffect(() => {
+    // A local model left idle is slow to answer the first question: start loading it now,
+    // while the student picks documents and types.
+    apiRequest('/tutor/warmup', { method: 'POST' }).catch(() => undefined);
+    return () => stop(true); // leaving the page cancels the model work
+  }, []);
+
   // A different document selection is a different context: start a fresh conversation.
   const selectionKey = [...selected].sort().join(',');
-  useEffect(() => setTurns([]), [selectionKey]);
+  useEffect(() => {
+    stop(true);
+    setTurns([]);
+  }, [selectionKey]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
-  }, [turns]);
+  }, [turns, streamText, progress?.stage]);
 
   const selectedMaterials = ready.filter((m) => selected.includes(m.id));
 
@@ -78,36 +111,89 @@ export function TutorChatPanel() {
     [suggestionsQuery.data],
   );
 
-  const ask = useMutation({
-    mutationFn: (q: string) =>
-      apiRequest<TutorAnswer>('/tutor/queries', {
-        method: 'POST',
-        json: {
-          question: q,
-          materialIds: selected,
-          history: turns.slice(-6).map(({ role, content }) => ({ role, content })),
-        },
-      }),
-    onSuccess: (res) =>
-      setTurns((t) => [...t, { role: 'assistant', content: res.answer, citations: res.citations, grounded: res.grounded }]),
-    onError: (err) => setTurns((t) => [...t, { role: 'assistant', content: tutorErrorMessage(err) }]),
-  });
-
-  // Local CPU inference can be slow, especially while documents are being generated.
-  const [slow, setSlow] = useState(false);
-  useEffect(() => {
-    if (!ask.isPending) return setSlow(false);
-    const timer = setTimeout(() => setSlow(true), SLOW_ANSWER_MS);
-    return () => clearTimeout(timer);
-  }, [ask.isPending]);
-  const generationRunning = ready.some(isPipelineBusy);
-
-  function send(q: string) {
+  async function send(q: string) {
     const text = q.trim();
-    if (!text || ask.isPending || selected.length === 0) return;
+    if (!text || busy || selected.length === 0) return;
+    const history = turns.slice(-6).map(({ role, content }) => ({ role, content }));
     setTurns((t) => [...t, { role: 'user', content: text }]);
     setQuestion('');
-    ask.mutate(text);
+
+    const current = { controller: new AbortController(), discard: false };
+    answerRef.current = current;
+    setProgress({ stage: 'searching', startedAt: Date.now(), waitingForBackground: false, sources: [] });
+    let written = '';
+    let finished = false;
+    const finish = (turn: Omit<ChatTurn, 'role'>) => {
+      finished = true;
+      if (!current.discard) setTurns((t) => [...t, { role: 'assistant', ...turn }]);
+    };
+
+    const onEvent = (event: TutorStreamEvent) => {
+      switch (event.type) {
+        case 'stage':
+          if (event.stage === 'waiting') {
+            setProgress((p) => p && { ...p, waitingForBackground: true });
+          } else if (event.stage === 'reading') {
+            const { estimatedSeconds, promptTokens } = event;
+            setProgress(
+              (p) =>
+                p && {
+                  ...p,
+                  stage: 'reading',
+                  readingStartedAt: Date.now(),
+                  estimatedReadSeconds: estimatedSeconds,
+                  promptTokens,
+                },
+            );
+          } else if (event.stage === 'writing') {
+            setProgress(null);
+            setStreamText('');
+          } else {
+            const stage = event.stage;
+            setProgress((p) => p && { ...p, stage });
+          }
+          break;
+        case 'sources': {
+          const sources = event.citations;
+          setProgress((p) => p && { ...p, sources });
+          break;
+        }
+        case 'text':
+          written += event.text;
+          setStreamText(written);
+          break;
+        case 'done':
+          finish({ content: event.answer, citations: event.citations, grounded: event.grounded, seconds: event.seconds });
+          break;
+        case 'error': {
+          const message = event.status === 429 ? tutorErrorMessage(new ApiError(429, event.message)) : event.message;
+          finish({ content: written ? `${written}\n\n(${message})` : message });
+          break;
+        }
+      }
+    };
+
+    try {
+      await apiStream<TutorStreamEvent>(
+        '/tutor/queries/stream',
+        { question: text, materialIds: selected, history },
+        onEvent,
+        current.controller.signal,
+      );
+      if (!finished) finish({ content: written || 'The connection to the tutor was lost. Please ask again.' });
+    } catch (err) {
+      if (current.controller.signal.aborted) {
+        finish({ content: written ? `${written}…` : 'Stopped before the answer started.', stopped: true });
+      } else {
+        finish({ content: written ? `${written}…\n\n(${tutorErrorMessage(err)})` : tutorErrorMessage(err) });
+      }
+    } finally {
+      if (answerRef.current === current) {
+        answerRef.current = null;
+        setProgress(null);
+        setStreamText(null);
+      }
+    }
   }
 
   function handleSubmit(event: FormEvent) {
@@ -169,8 +255,25 @@ export function TutorChatPanel() {
                   </span>
                 ))
               )}
+              {aiSettings.data && (
+                <Link
+                  href="/student/ai-settings"
+                  title="Change the AI model"
+                  className={`ml-auto ${aiSettings.data.mode === 'HOSTED' ? 'badge-violet' : 'badge-neutral'} hover:border-aqua-400/60`}
+                >
+                  {aiSettings.data.mode === 'HOSTED' ? <Cloud className="h-3 w-3" aria-hidden /> : <Cpu className="h-3 w-3" aria-hidden />}
+                  {describeEngine(aiSettings.data)}
+                  <span className="text-aqua-300">· change</span>
+                </Link>
+              )}
               {turns.length > 0 && (
-                <button className="btn-ghost btn-sm ml-auto" onClick={() => setTurns([])}>
+                <button
+                  className={`btn-ghost btn-sm ${aiSettings.data ? '' : 'ml-auto'}`}
+                  onClick={() => {
+                    stop(true);
+                    setTurns([]);
+                  }}
+                >
                   <MessageSquarePlus className="h-3.5 w-3.5" /> New chat
                 </button>
               )}
@@ -235,18 +338,33 @@ export function TutorChatPanel() {
                     {turn.grounded === false && (
                       <p className="mt-1 text-xs text-slate-500">Not covered by the selected documents. Try selecting more.</p>
                     )}
+                    {turn.stopped && <p className="mt-1 text-xs text-slate-500">Stopped.</p>}
+                    {turn.seconds !== undefined && turn.grounded !== false && (
+                      <p className="mt-1 text-[11px] text-slate-500">Answered in {formatDuration(turn.seconds)}</p>
+                    )}
                   </div>
                 </div>
               ))}
 
-              {ask.isPending && (
-                <div className="flex items-center gap-2 text-sm text-slate-400">
-                  <Loader2 className="h-4 w-4 animate-spin text-aqua-400" aria-hidden />
-                  {slow
-                    ? generationRunning
-                      ? 'Still thinking… the local AI model is also generating study material, so this can take a minute or two.'
-                      : 'Still thinking… the local AI model can take up to a minute.'
-                    : 'Reading your documents…'}
+              {progress && <TutorProgress state={progress} onStop={() => stop()} />}
+
+              {streamText !== null && (
+                <div className="flex gap-3">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-aqua-500/15 text-aqua-300" aria-hidden>
+                    <Bot className="h-4 w-4" />
+                  </span>
+                  <div className="max-w-[85%]">
+                    <div className="inline-block rounded-2xl rounded-tl-sm border border-ink-700 bg-ink-850 px-4 py-2.5 text-left text-sm whitespace-pre-wrap text-slate-200">
+                      {streamText}
+                      <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-aqua-300" aria-hidden />
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
+                      <span>Writing…</span>
+                      <button type="button" className="btn-ghost btn-sm" onClick={() => stop()}>
+                        <Square className="h-3 w-3" aria-hidden /> Stop
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -263,7 +381,7 @@ export function TutorChatPanel() {
                   onChange={(e) => setQuestion(e.target.value)}
                 />
               </label>
-              <button className="btn-primary" disabled={ask.isPending || !question.trim() || selected.length === 0} aria-label="Send">
+              <button className="btn-primary" disabled={busy || !question.trim() || selected.length === 0} aria-label="Send">
                 <SendHorizontal className="h-4 w-4" />
                 <span className="hidden sm:inline">Ask</span>
               </button>
