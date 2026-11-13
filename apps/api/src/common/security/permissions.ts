@@ -18,6 +18,7 @@ export enum Permission {
   ExamsTake = 'exams:take',
   ExamResultsReadAll = 'exam-results:read-all',
   RoadmapsUse = 'roadmaps:use',
+  BrandingManage = 'branding:manage',
 }
 
 const ROLE_PERMISSIONS: Readonly<Record<UserRole, ReadonlySet<Permission>>> = {
@@ -32,6 +33,7 @@ const ROLE_PERMISSIONS: Readonly<Record<UserRole, ReadonlySet<Permission>>> = {
     Permission.ExamPapersManage,
     Permission.AnalyticsRead,
     Permission.ExamResultsReadAll,
+    Permission.BrandingManage,
   ]),
   [UserRole.EXAMINER]: new Set([
     Permission.MaterialsUpload,

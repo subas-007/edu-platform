@@ -26,6 +26,13 @@ const nextConfig: NextConfig = {
      * (API_PROXY_TIMEOUT_MS in .env.local; default 300 s) and the API decides first.
      */
     proxyTimeout: Number(process.env.API_PROXY_TIMEOUT_MS) || 300_000,
+    /**
+     * Because the app has middleware, Next copies every request body (even on routes the
+     * middleware skips, like the /api/v1 proxy) and cuts it at 10 MB by default, which left
+     * larger uploads hanging. Keep this a little above the API's MAX_UPLOAD_BYTES (150 MB)
+     * plus form overhead, so the API decides and answers 413 for files that are too big.
+     */
+    middlewareClientMaxBodySize: Number(process.env.UPLOAD_PROXY_MAX_BYTES) || 160 * 1024 * 1024,
   },
   reactStrictMode: true,
   /**

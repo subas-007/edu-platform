@@ -6,7 +6,7 @@ import { useRef, useState, type DragEvent, type FormEvent } from 'react';
 import { apiRequest, ApiError } from '@/lib/api-client';
 
 const ACCEPTED = '.pdf,.docx,.png,.jpg,.jpeg';
-const MAX_BYTES = 20 * 1024 * 1024;
+const MAX_BYTES = 150 * 1024 * 1024;
 
 /**
  * `onDemand` (student uploads): the document is only stored and indexed; flashcards and
@@ -29,7 +29,7 @@ export function UploadMaterialForm({ onDemand = false }: { onDemand?: boolean })
         return apiRequest('/study-materials/urls', { method: 'POST', json: { title, url } });
       }
       if (!file) throw new Error('Choose a file');
-      if (file.size > MAX_BYTES) throw new Error('File exceeds 20 MB');
+      if (file.size > MAX_BYTES) throw new Error('File exceeds 150 MB');
       const form = new FormData();
       form.append('title', title);
       form.append('file', file);
@@ -76,7 +76,7 @@ export function UploadMaterialForm({ onDemand = false }: { onDemand?: boolean })
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-semibold text-white">Add study material</h2>
-          <p className="text-xs text-slate-400">PDF, DOCX, PNG/JPEG (OCR) or a public web page · max 20 MB</p>
+          <p className="text-xs text-slate-400">PDF, DOCX, PNG/JPEG (OCR) or a public web page · max 150 MB</p>
         </div>
         <div className="segmented" role="group" aria-label="Source type">
           <button type="button" aria-pressed={mode === 'file'} onClick={() => setMode('file')}>File / image</button>

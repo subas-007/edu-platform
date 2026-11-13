@@ -20,7 +20,7 @@ const envSchema = z.object({
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(30).default(7),
   UPLOAD_DIR: z.string().default('./storage/uploads'),
-  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(20 * 1024 * 1024),
+  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(150 * 1024 * 1024),
   LLM_BASE_URL: z.string().url().optional().or(z.literal('').transform(() => undefined)),
   LLM_API_KEY: z.string().min(1),
   LLM_CHAT_MODEL: z.string().min(1).default('gpt-4o-mini'),

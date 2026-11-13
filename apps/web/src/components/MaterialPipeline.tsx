@@ -9,7 +9,16 @@ import { ProgressBar } from './ui';
 
 type PipelineMaterial = Pick<
   StudyMaterial,
-  'id' | 'status' | 'generationStatus' | 'generationProgress' | 'generationError' | 'failureReason' | 'uploadedBy' | 'generations'
+  | 'id'
+  | 'status'
+  | 'generationStatus'
+  | 'generationProgress'
+  | 'generationError'
+  | 'failureReason'
+  | 'uploadedBy'
+  | 'generations'
+  | 'processingNote'
+  | 'processingProgress'
 >;
 
 /** One badge for the whole pipeline: Queued → Processing → Generating n% → Ready / Failed. */
@@ -18,7 +27,12 @@ export function MaterialPipelineBadge({ material }: { material: PipelineMaterial
     case 'queued':
       return <span className="badge-neutral"><Clock className="h-3 w-3" aria-hidden /> Queued</span>;
     case 'processing':
-      return <span className="badge-amber"><Loader2 className="h-3 w-3 animate-spin" aria-hidden /> Reading document</span>;
+      return (
+        <span className="badge-amber">
+          <Loader2 className="h-3 w-3 animate-spin" aria-hidden /> Reading document
+          {material.processingProgress != null && ` ${material.processingProgress}%`}
+        </span>
+      );
     case 'generating':
       return (
         <span className="badge-aqua">
@@ -40,7 +54,7 @@ export function pipelineLabel(material: PipelineMaterial): string {
     case 'queued':
       return 'Queued';
     case 'processing':
-      return 'Reading…';
+      return material.processingProgress != null ? `Reading ${material.processingProgress}%` : 'Reading…';
     case 'generating':
       return `${material.generationProgress}%`;
     case 'generation-failed':
@@ -176,18 +190,22 @@ export function GenerationNotice({
     stage === 'queued'
       ? 'Waiting for the worker to pick up this document…'
       : stage === 'processing'
-        ? 'Reading and indexing the document…'
+        ? material.processingNote
+          ? `${material.processingNote}. Scanned books take a few seconds per page.`
+          : 'Reading and indexing the document…'
         : hasContent
           ? `More ${what} are on the way — new ones appear here automatically.`
           : `The local AI model is writing ${what}. The first ones usually appear within a few minutes.`;
+  const progress =
+    stage === 'generating' ? material.generationProgress : stage === 'processing' ? material.processingProgress : null;
   return (
     <div role="status" className="space-y-2 rounded-xl border border-aqua-500/30 bg-aqua-500/5 p-4">
       <div className="flex items-center gap-2 text-sm text-aqua-100">
         <Sparkles className="h-4 w-4 shrink-0 text-aqua-300" aria-hidden />
         <span className="flex-1">{label}</span>
-        {stage === 'generating' && <span className="text-xs text-aqua-200">{material.generationProgress}%</span>}
+        {progress != null && <span className="text-xs text-aqua-200">{progress}%</span>}
       </div>
-      {stage === 'generating' && <ProgressBar value={Math.max(3, material.generationProgress)} />}
+      {progress != null && <ProgressBar value={Math.max(3, progress)} />}
     </div>
   );
 }

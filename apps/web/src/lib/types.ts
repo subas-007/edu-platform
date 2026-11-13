@@ -31,6 +31,9 @@ export interface StudyMaterial {
   status: MaterialStatus;
   visibility: 'PRIVATE' | 'PUBLISHED';
   failureReason: string | null;
+  /** While PROCESSING: the long step under way (OCR of scanned PDF pages) and its 0..100 progress. */
+  processingNote: string | null;
+  processingProgress: number | null;
   complexityScore: number | null;
   reusedFromId: string | null;
   /** Flashcard/question/roadmap generation, which runs after status becomes READY. */

@@ -9,6 +9,8 @@ export const MATERIAL_LIST_SELECT = {
   status: true,
   visibility: true,
   failureReason: true,
+  processingNote: true,
+  processingProgress: true,
   complexityScore: true,
   reusedFromId: true,
   generationStatus: true,

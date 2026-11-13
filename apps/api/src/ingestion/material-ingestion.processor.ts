@@ -65,6 +65,8 @@ export class MaterialIngestionProcessor extends WorkerHost {
       data: {
         status: MaterialStatus.PROCESSING,
         failureReason: null,
+        processingNote: null,
+        processingProgress: null,
         generationStatus: GenerationStatus.PENDING,
         generationProgress: 0,
         generationError: null,
@@ -72,9 +74,13 @@ export class MaterialIngestionProcessor extends WorkerHost {
     });
 
     try {
-      const text = normaliseExtractedText(await this.extractMaterialText(material));
+      const text = normaliseExtractedText(await this.extractMaterialText(materialId, material));
       if (text.length < MIN_USEFUL_CHARS) {
-        throw new UserFacingIngestionError('Not enough readable text was found in this material');
+        throw new UserFacingIngestionError(
+          material.fileType === MaterialFileType.PDF
+            ? 'Not enough readable text was found in this PDF, even after text recognition on its scanned pages'
+            : 'Not enough readable text was found in this material',
+        );
       }
 
       // Identical content already analysed? Copy its assets instead of re-embedding/re-generating.
@@ -103,6 +109,8 @@ export class MaterialIngestionProcessor extends WorkerHost {
           where: { id: materialId },
           data: {
             status: MaterialStatus.READY,
+            processingNote: null,
+            processingProgress: null,
             complexityScore,
             ...(onDemand ? { generationStatus: GenerationStatus.COMPLETED, generationProgress: 100 } : {}),
           },
@@ -124,6 +132,8 @@ export class MaterialIngestionProcessor extends WorkerHost {
           where: { id: materialId },
           data: {
             status: MaterialStatus.FAILED,
+            processingNote: null,
+            processingProgress: null,
             // Only curated messages reach users; raw errors stay in server logs.
             failureReason: permanent ? (error as Error).message : 'Processing failed. Please retry.',
           },
@@ -135,18 +145,31 @@ export class MaterialIngestionProcessor extends WorkerHost {
     }
   }
 
-  private async extractMaterialText(material: { fileType: MaterialFileType; fileUrl: string }) {
+  private async extractMaterialText(materialId: string, material: { fileType: MaterialFileType; fileUrl: string }) {
     if (material.fileType === MaterialFileType.URL) return extractTextFromUrl(material.fileUrl);
     const file = await this.storage.readMaterialFile(material.fileUrl);
     switch (material.fileType) {
       case MaterialFileType.PDF:
-        return extractTextFromPdf(file);
+        return extractTextFromPdf(file, (done, total) => this.reportOcrProgress(materialId, done, total));
       case MaterialFileType.DOCX:
         return extractTextFromDocx(file);
       case MaterialFileType.PNG:
       case MaterialFileType.JPEG:
         return extractTextFromImage(file);
     }
+  }
+
+  /** Scanned PDFs can take many minutes; show which page OCR is on. Never fails the job. */
+  private async reportOcrProgress(materialId: string, done: number, total: number) {
+    await this.prisma.material
+      .update({
+        where: { id: materialId },
+        data: {
+          processingNote: `Recognising text in scanned pages: ${done} of ${total}`,
+          processingProgress: Math.floor((done / total) * 100),
+        },
+      })
+      .catch(() => undefined);
   }
 }
 

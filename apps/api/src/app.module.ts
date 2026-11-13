@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { LlmModule } from './ai/llm.service';
 import { AiSettingsModule } from './ai-settings/ai-settings.module';
+import { BrandingModule } from './branding/branding.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AuditLogModule } from './audit/audit-log.service';
 import { AuditLogsModule } from './audit/audit-logs.controller';
@@ -46,6 +47,7 @@ class HealthController {
     StudyMaterialsModule,
     TutorModule,
     AiSettingsModule,
+    BrandingModule,
     ExamQuestionsModule,
     ExamSessionsModule,
     ExamPapersModule,

@@ -11,6 +11,7 @@ import {
   GraduationCap,
   Layers,
   LayoutDashboard,
+  Palette,
   ScrollText,
   ShieldCheck,
   Users,
@@ -34,6 +35,7 @@ export const NAV_ICONS = {
   users: Users,
   moderation: ShieldCheck,
   audit: ScrollText,
+  branding: Palette,
 } satisfies Record<string, LucideIcon>;
 
 export type NavIconName = keyof typeof NAV_ICONS;

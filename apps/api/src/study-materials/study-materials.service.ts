@@ -10,6 +10,7 @@ import { Queue } from 'bullmq';
 import { ModelResolverService } from '../ai/model-resolver.service';
 import { AuditLogService } from '../audit/audit-log.service';
 import { AuthenticatedUser } from '../common/decorators/access.decorators';
+import { BrandingService } from '../branding/branding.service';
 import {
   renderFlashcardsCsv,
   renderFlashcardsPdf,
@@ -47,6 +48,7 @@ export class StudyMaterialsService {
     private readonly storage: MaterialStorageService,
     private readonly auditLog: AuditLogService,
     private readonly models: ModelResolverService,
+    private readonly branding: BrandingService,
     @InjectQueue(MATERIAL_INGESTION_QUEUE)
     private readonly ingestionQueue: Queue<MaterialIngestionJob>,
     @InjectQueue(ASSET_GENERATION_QUEUE)
@@ -285,7 +287,7 @@ export class StudyMaterialsService {
     const stem = `${toFilenameStem(material.title)}-flashcards`;
     return query.format === 'csv'
       ? { buffer: renderFlashcardsCsv(cards), type: 'text/csv; charset=utf-8', filename: `${stem}.csv` }
-      : { buffer: await renderFlashcardsPdf(material.title, cards), type: 'application/pdf', filename: `${stem}.pdf` };
+      : { buffer: await renderFlashcardsPdf(material.title, cards, await this.branding.pdfBrand()), type: 'application/pdf', filename: `${stem}.pdf` };
   }
 
   private async createAndEnqueueMaterial(

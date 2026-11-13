@@ -8,6 +8,7 @@ const SECTIONS: NavSection[] = [
     items: [
       { href: '/admin', label: 'Users', icon: 'users' },
       { href: '/admin/audit-logs', label: 'Audit logs', icon: 'audit' },
+      { href: '/admin/branding', label: 'Branding', icon: 'branding' },
     ],
   },
   {

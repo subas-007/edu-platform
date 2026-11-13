@@ -6,12 +6,8 @@ import PDFDocument from 'pdfkit';
  * Uses the built-in PDF fonts (no font files to ship), which cover Latin-1 + WinAnsi.
  */
 
+/** Fixed colours; the brand ones (accent, dark surfaces) come from PdfBrand. */
 const COLORS = {
-  ink: '#0b1220',
-  panel: '#16213a',
-  line: '#2a3b5f',
-  aqua: '#1fc7b8',
-  aquaDark: '#0f8f84',
   text: '#1e293b',
   muted: '#64748b',
   good: '#059669',
@@ -34,12 +30,26 @@ export function toPdfText(value: string): string {
     .join('');
 }
 
+/** The administrator's branding (see BrandingService.pdfBrand). */
+export interface PdfBrand {
+  name: string;
+  /** Light accent, for use on the dark surfaces. */
+  accent: string;
+  /** Accent with at least 4.5:1 contrast on white. */
+  accentOnLight: string;
+  ink: string;
+  panel: string;
+  line: string;
+  logo: Buffer | null;
+}
+
 function renderToBuffer(
+  brand: PdfBrand,
   options: PDFKit.PDFDocumentOptions,
   draw: (doc: PDFKit.PDFDocument) => void,
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ ...options, info: { Producer: 'Edu Platform', ...options.info } });
+    const doc = new PDFDocument({ ...options, info: { Producer: toPdfText(brand.name), ...options.info } });
     const chunks: Buffer[] = [];
     doc.on('data', (c: Buffer) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
@@ -51,6 +61,16 @@ function renderToBuffer(
       reject(error);
     }
   });
+}
+
+/** The logo, centred in the box; skipped if it cannot be embedded (the text still names the site). */
+function drawLogo(doc: PDFKit.PDFDocument, logo: Buffer | null, x: number, y: number, width: number, height: number) {
+  if (!logo) return;
+  try {
+    doc.image(logo, x, y, { fit: [width, height], align: 'center', valign: 'center' });
+  } catch {
+    /* unreadable image: leave it out */
+  }
 }
 
 const formatDate = (d: Date) =>
@@ -68,22 +88,24 @@ export interface CertificateData {
   completedAt: Date;
 }
 
-export function renderCertificatePdf(data: CertificateData): Promise<Buffer> {
+export function renderCertificatePdf(data: CertificateData, brand: PdfBrand): Promise<Buffer> {
   return renderToBuffer(
+    brand,
     { size: 'A4', layout: 'landscape', margin: 0, info: { Title: `Certificate - ${toPdfText(data.examTitle)}` } },
     (doc) => {
       const { width: W, height: H } = doc.page;
 
-      doc.rect(0, 0, W, H).fill(COLORS.ink);
-      doc.rect(24, 24, W - 48, H - 48).lineWidth(2).stroke(COLORS.aqua);
-      doc.rect(34, 34, W - 68, H - 68).lineWidth(0.5).stroke(COLORS.line);
+      doc.rect(0, 0, W, H).fill(brand.ink);
+      doc.rect(24, 24, W - 48, H - 48).lineWidth(2).stroke(brand.accent);
+      doc.rect(34, 34, W - 68, H - 68).lineWidth(0.5).stroke(brand.line);
       // corner accents
       for (const [x, y] of [[24, 24], [W - 84, 24], [24, H - 28], [W - 84, H - 28]] as const) {
-        doc.rect(x, y, 60, 4).fill(COLORS.aqua);
+        doc.rect(x, y, 60, 4).fill(brand.accent);
       }
 
-      doc.fillColor(COLORS.aqua).font('Helvetica-Bold').fontSize(12)
-        .text('EDU PLATFORM', 0, 78, { width: W, align: 'center', characterSpacing: 6 });
+      drawLogo(doc, brand.logo, W / 2 - 80, 42, 160, 30);
+      doc.fillColor(brand.accent).font('Helvetica-Bold').fontSize(12)
+        .text(toPdfText(brand.name).toUpperCase(), 0, 78, { width: W, align: 'center', characterSpacing: 6 });
       doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(40)
         .text('Certificate of Achievement', 0, 112, { width: W, align: 'center' });
 
@@ -91,7 +113,7 @@ export function renderCertificatePdf(data: CertificateData): Promise<Buffer> {
         .text('This certifies that', 0, 188, { width: W, align: 'center' });
       doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(30)
         .text(toPdfText(data.candidateName), 60, 216, { width: W - 120, align: 'center' });
-      doc.moveTo(W / 2 - 180, 262).lineTo(W / 2 + 180, 262).lineWidth(1).stroke(COLORS.aqua);
+      doc.moveTo(W / 2 - 180, 262).lineTo(W / 2 + 180, 262).lineWidth(1).stroke(brand.accent);
 
       doc.fillColor('#94a3b8').font('Helvetica').fontSize(14)
         .text('has successfully completed the assessment', 0, 280, { width: W, align: 'center' });
@@ -101,9 +123,9 @@ export function renderCertificatePdf(data: CertificateData): Promise<Buffer> {
       // score badge
       const cx = W / 2;
       const cy = 400;
-      doc.circle(cx, cy, 42).fill(COLORS.panel);
-      doc.circle(cx, cy, 42).lineWidth(3).stroke(COLORS.aqua);
-      doc.fillColor(COLORS.aqua).font('Helvetica-Bold').fontSize(24)
+      doc.circle(cx, cy, 42).fill(brand.panel);
+      doc.circle(cx, cy, 42).lineWidth(3).stroke(brand.accent);
+      doc.fillColor(brand.accent).font('Helvetica-Bold').fontSize(24)
         .text(`${Math.round(data.scorePercent)}%`, cx - 42, cy - 14, { width: 84, align: 'center' });
       doc.fillColor('#94a3b8').font('Helvetica').fontSize(10)
         .text(`${data.correctCount} of ${data.totalQuestions} correct`, 0, cy + 50, { width: W, align: 'center' });
@@ -135,21 +157,22 @@ export interface ScorecardData {
   questions: Array<{ index: number; conceptTag: string; outcome: 'Correct' | 'Incorrect' | 'Unanswered' }>;
 }
 
-export function renderScorecardPdf(data: ScorecardData): Promise<Buffer> {
+export function renderScorecardPdf(data: ScorecardData, brand: PdfBrand): Promise<Buffer> {
   return renderToBuffer(
+    brand,
     { size: 'A4', margin: 48, info: { Title: `Score card - ${toPdfText(data.examTitle)}` } },
     (doc) => {
       const W = doc.page.width;
       const left = 48;
       const contentWidth = W - 96;
 
-      doc.rect(0, 0, W, 110).fill(COLORS.ink);
-      doc.rect(0, 110, W, 4).fill(COLORS.aqua);
-      doc.fillColor(COLORS.aqua).font('Helvetica-Bold').fontSize(10)
-        .text('EDU PLATFORM  ·  SCORE CARD', left, 34, { characterSpacing: 2 });
+      doc.rect(0, 0, W, 110).fill(brand.ink);
+      doc.rect(0, 110, W, 4).fill(brand.accent);
+      doc.fillColor(brand.accent).font('Helvetica-Bold').fontSize(10)
+        .text(`${toPdfText(brand.name).toUpperCase()}  ·  SCORE CARD`, left, 34, { characterSpacing: 2 });
       doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(20)
         .text(toPdfText(data.examTitle), left, 52, { width: contentWidth - 120 });
-      doc.fillColor(COLORS.aqua).font('Helvetica-Bold').fontSize(30)
+      doc.fillColor(brand.accent).font('Helvetica-Bold').fontSize(30)
         .text(`${Math.round(data.scorePercent)}%`, W - 48 - 120, 46, { width: 120, align: 'right' });
 
       let y = 136;
@@ -213,7 +236,7 @@ export function renderScorecardPdf(data: ScorecardData): Promise<Buffer> {
       // The footer sits inside the bottom margin; without this pdfkit would start a new page for it.
       doc.page.margins.bottom = 0;
       doc.fillColor(COLORS.muted).font('Helvetica').fontSize(8)
-        .text(`Generated ${new Date().toISOString().slice(0, 10)} by Edu Platform`, left, doc.page.height - 40, {
+        .text(`Generated ${new Date().toISOString().slice(0, 10)} by ${toPdfText(brand.name)}`, left, doc.page.height - 40, {
           width: contentWidth,
           align: 'center',
           lineBreak: false,
@@ -227,18 +250,20 @@ export function renderScorecardPdf(data: ScorecardData): Promise<Buffer> {
 export function renderFlashcardsPdf(
   materialTitle: string,
   cards: Array<{ frontText: string; backText: string }>,
+  brand: PdfBrand,
 ): Promise<Buffer> {
   return renderToBuffer(
+    brand,
     { size: 'A4', margin: 48, info: { Title: `Flashcards - ${toPdfText(materialTitle)}` } },
     (doc) => {
       const W = doc.page.width;
       const left = 48;
       const contentWidth = W - 96;
 
-      doc.rect(0, 0, W, 90).fill(COLORS.ink);
-      doc.rect(0, 90, W, 4).fill(COLORS.aqua);
-      doc.fillColor(COLORS.aqua).font('Helvetica-Bold').fontSize(10)
-        .text('EDU PLATFORM  ·  FLASHCARDS', left, 28, { characterSpacing: 2 });
+      doc.rect(0, 0, W, 90).fill(brand.ink);
+      doc.rect(0, 90, W, 4).fill(brand.accent);
+      doc.fillColor(brand.accent).font('Helvetica-Bold').fontSize(10)
+        .text(`${toPdfText(brand.name).toUpperCase()}  ·  FLASHCARDS`, left, 28, { characterSpacing: 2 });
       doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(18)
         .text(toPdfText(materialTitle), left, 46, { width: contentWidth - 80 });
       doc.fillColor('#94a3b8').font('Helvetica').fontSize(10)
@@ -256,8 +281,8 @@ export function renderFlashcardsPdf(
         if (y + boxH > doc.page.height - 48) { doc.addPage(); y = 48; }
 
         doc.roundedRect(left, y, contentWidth, boxH, 8).lineWidth(1).stroke('#cbd5e1');
-        doc.rect(left, y + 8, 3, boxH - 16).fill(COLORS.aqua);
-        doc.fillColor(COLORS.aquaDark).font('Helvetica-Bold').fontSize(9).text(`Q${i + 1}`, left + 14, y + 12, { width: 30 });
+        doc.rect(left, y + 8, 3, boxH - 16).fill(brand.accentOnLight);
+        doc.fillColor(brand.accentOnLight).font('Helvetica-Bold').fontSize(9).text(`Q${i + 1}`, left + 14, y + 12, { width: 30 });
         doc.fillColor(COLORS.text).font('Helvetica-Bold').fontSize(11).text(front, left + 46, y + 12, { width: contentWidth - 60 });
         const backY = y + 12 + frontH + 10;
         doc.fillColor(COLORS.muted).font('Helvetica-Bold').fontSize(9).text('A', left + 14, backY, { width: 30 });

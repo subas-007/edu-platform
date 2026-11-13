@@ -1,7 +1,7 @@
 # Edu Platform
 
 Secure, AI-assisted study platform with three isolated roles (Admin, Examiner, Student), a multimodal
-ingestion pipeline (PDF, DOCX, PNG/JPEG via OCR, web URLs), RAG tutoring on pgvector, AI-generated
+ingestion pipeline (PDF, DOCX, PNG/JPEG via OCR, scanned PDF pages via OCR, web URLs), RAG tutoring on pgvector, AI-generated
 flashcards / questions / roadmaps, and a dual-mode (Learning / Exam) assessment engine.
 
 ```
@@ -132,8 +132,15 @@ concepts (no extra AI calls), review it, then publish; students enroll and sit i
 candidate's results. Re-uploading an already-analysed document **reuses its chunks, embeddings, flashcards,
 questions and roadmap** (matched by a content hash) instead of calling the LLM again.
 
-**Shell**: dark slate-blue theme with aqua accents; collapsible sidebar (drawer on mobile); top bar with search
-(`/` or Ctrl+K), notifications and a profile menu.
+**Administrator: Branding** (Admin → Branding): the **application name**, a **logo** (PNG or JPEG, up to 512 KB)
+and the **colour theme**: an accent colour (presets or any colour) and a background tone (Midnight blue, Graphite,
+Plum, Pine, Espresso), previewed before saving. They apply to every page, the sign-in page, the browser tab, and the
+certificate, score card and flashcard PDFs. The API turns the accent into a shade scale with fixed contrast rules:
+the colour is used exactly when text on it and next to it stays readable (WCAG AA, 4.5:1), and is lightened just
+enough when it would not. The theme reaches the page in the server render, so there is no flash of the old colours.
+
+**Shell**: dark theme (by default slate-blue with aqua accents, see Branding); collapsible sidebar (drawer on
+mobile); top bar with search (`/` or Ctrl+K), notifications and a profile menu.
 
 ## Layout
 
@@ -162,6 +169,8 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 | `GET /auth/me` | authenticated |
 | `GET/POST /users`, `PATCH /users/:id` | `users:manage` (Admin) |
 | `GET /audit-logs` | `audit-logs:read` (Admin) |
+| `GET /branding`, `GET /branding/logo?v=` (name, logo, computed colour palette) | public (cached, not rate-limited) |
+| `GET /branding/options`, `GET /branding/palette?accent=&surface=` (preview), `PUT /branding`, `PUT/DELETE /branding/logo` | `branding:manage` (Admin) |
 | `GET /study-materials[/:id[/flashcards]]` (`?search=`) | authenticated + object policy |
 | `GET /study-materials/:id/flashcards/export?format=pdf|csv` | authenticated + object policy |
 | `POST /study-materials/files`, `POST /study-materials/urls` | `materials:upload` (all roles) |
@@ -200,7 +209,8 @@ questions and roadmap** (matched by a content hash) instead of calling the LLM a
 
 **Input handling**
 - Zod `.strict()` schemas on every body/query (rejects mass-assignment like `{ "role": "ADMIN" }`); control-char stripping.
-- Uploads: 20 MB cap, memory-only multer, **magic-byte** detection (client MIME/filename ignored), PNG dimension cap, server-generated storage keys, path-traversal guard, files outside web root with `0600`.
+- Uploads: 150 MB cap (`MAX_UPLOAD_BYTES` in the API; the web proxy passes bodies up to 160 MB, `UPLOAD_PROXY_MAX_BYTES`, so the API is the one that answers 413), memory-only multer, **magic-byte** detection (client MIME/filename ignored), PNG dimension cap, server-generated storage keys, path-traversal guard, files outside web root with `0600`.
+- Scanned PDFs: pages with no text layer (fewer than 25 letters/digits) are rendered at 2000 px wide and read with Tesseract OCR by up to 4 workers (a quarter of the CPU threads); the material shows "Recognising text in scanned pages: n of N" while it runs (roughly 8–11 s per page per worker; a 200-page book takes about 8–10 minutes on 16 threads). Up to 500 pages are read.
 - URL ingestion: http(s) only, standard ports, no credentials; DNS-pinned connection lookup blocks private/loopback/link-local/metadata/IPv4-mapped/6to4 ranges (defeats DNS rebinding); every redirect re-validated; 5 MB/time limits; content-type allow-list; JSDOM without script execution.
 - All SQL is parameterised (Prisma or tagged-template `$queryRaw`).
 
